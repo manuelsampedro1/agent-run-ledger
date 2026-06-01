@@ -1,0 +1,27 @@
+{
+  "name": "agent-run-ledger",
+  "version": "0.1.0",
+  "description": "Audit AI agent runs with a local JSONL ledger and static HTML reports.",
+  "type": "module",
+  "bin": {
+    "agent-run-ledger": "./bin/agent-run-ledger.js"
+  },
+  "scripts": {
+    "build": "node scripts/build.js",
+    "lint": "node scripts/lint.js",
+    "test": "node --test",
+    "check": "npm run lint && npm run build && npm test"
+  },
+  "keywords": [
+    "ai-agents",
+    "codex",
+    "claude-code",
+    "automation",
+    "audit-log"
+  ],
+  "author": "Manuel Sampedro",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  }
+}

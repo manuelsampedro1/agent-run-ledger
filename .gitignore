@@ -1,0 +1,4 @@
+.agent-run/
+node_modules/
+coverage/
+.DS_Store
