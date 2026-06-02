@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -12,7 +12,7 @@ import {
   validateEvent,
   writeLedger,
 } from "../src/ledger.js";
-import { parseArgs, runCli } from "../src/cli.js";
+import { parseArgs, parseVerificationChecklist, runCli } from "../src/cli.js";
 import { renderReport } from "../src/report.js";
 
 test("createEvent normalizes repeated fields", () => {
@@ -191,6 +191,74 @@ test("doctor command can emit machine-readable JSON", async () => {
     assert.equal(payload.summary.attention.length, 0);
   } finally {
     console.log = originalLog;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("parseVerificationChecklist extracts files and commands by section", () => {
+  const entries = parseVerificationChecklist(`# Verification Checklist
+
+## Python
+
+- \`verify_by_change.py\`
+
+- Run \`python3 -m py_compile\` on changed Python files.
+- Run the closest targeted script or tests.
+
+## Docs
+
+- \`README.md\`
+
+- Review rendered Markdown and verify links if public-facing.
+`);
+
+  assert.deepEqual(entries, [
+    {
+      title: "Python",
+      files: ["verify_by_change.py"],
+      commands: [
+        "Run `python3 -m py_compile` on changed Python files.",
+        "Run the closest targeted script or tests.",
+      ],
+    },
+    {
+      title: "Docs",
+      files: ["README.md"],
+      commands: ["Review rendered Markdown and verify links if public-facing."],
+    },
+  ]);
+});
+
+test("import-checklist appends planned command events", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ledger-test-"));
+
+  try {
+    const ledgerPath = join(dir, "ledger.jsonl");
+    const checklistPath = join(dir, "checklist.md");
+    await writeFile(checklistPath, `# Verification Checklist
+
+## Python
+
+- \`verify_by_change.py\`
+
+- Run \`python3 -m py_compile\` on changed Python files.
+
+## Docs
+
+- \`README.md\`
+
+- Review rendered Markdown and verify links if public-facing.
+`, "utf8");
+
+    await runCli(["import-checklist", "--ledger", ledgerPath, "--checklist", checklistPath]);
+    const events = await readLedger(ledgerPath);
+
+    assert.equal(events.length, 2);
+    assert.deepEqual(events.map((event) => event.type), ["command", "command"]);
+    assert.deepEqual(events.map((event) => event.status), ["planned", "planned"]);
+    assert.deepEqual(events[0].files, ["verify_by_change.py"]);
+    assert.deepEqual(events[0].commands, ["Run `python3 -m py_compile` on changed Python files."]);
+  } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });

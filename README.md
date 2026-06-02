@@ -73,6 +73,15 @@ Machine-readable doctor output starts with:
 }
 ```
 
+Import a verification checklist as planned command evidence:
+
+```bash
+python3 /path/to/verify-by-change/verify_by_change.py --repo . --output /tmp/verification-checklist.md
+node bin/agent-run-ledger.js import-checklist \
+  --ledger .agent-run/ledger.jsonl \
+  --checklist /tmp/verification-checklist.md
+```
+
 Record your own run:
 
 ```bash
@@ -158,6 +167,7 @@ Optional fields:
 ```bash
 agent-run-ledger start --ledger .agent-run/ledger.jsonl --goal "..."
 agent-run-ledger note --ledger .agent-run/ledger.jsonl --type decision --title "..." --summary "..."
+agent-run-ledger import-checklist --ledger .agent-run/ledger.jsonl --checklist /tmp/verification-checklist.md
 agent-run-ledger doctor --ledger .agent-run/ledger.jsonl
 agent-run-ledger doctor --ledger .agent-run/ledger.jsonl --json
 agent-run-ledger report --ledger .agent-run/ledger.jsonl --out .agent-run/report.html

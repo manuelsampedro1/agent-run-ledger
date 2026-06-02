@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   appendEvent,
@@ -15,6 +15,7 @@ const HELP = `agent-run-ledger
 Usage:
   agent-run-ledger start --ledger <path> --goal <text>
   agent-run-ledger note --ledger <path> --type <type> --title <text> --summary <text>
+  agent-run-ledger import-checklist --ledger <path> --checklist <path> [--status planned]
   agent-run-ledger doctor --ledger <path> [--json]
   agent-run-ledger report --ledger <path> --out <path>
   agent-run-ledger demo --out <dir>
@@ -96,6 +97,28 @@ export async function runCli(argv) {
     return;
   }
 
+  if (command === "import-checklist") {
+    requireOption(args, "ledger");
+    requireOption(args, "checklist");
+
+    const markdown = await readFile(args.checklist, "utf8");
+    const events = parseVerificationChecklist(markdown).map((entry) => createEvent({
+      type: "command",
+      title: `Verify ${entry.title}`,
+      summary: `Imported verification checklist section from ${args.checklist}.`,
+      status: args.status ?? "planned",
+      files: entry.files,
+      commands: entry.commands,
+    }));
+
+    for (const event of events) {
+      await appendEvent(args.ledger, event);
+    }
+
+    console.log(`Imported ${events.length} verification event${events.length === 1 ? "" : "s"} into ${args.ledger}`);
+    return;
+  }
+
   if (command === "report") {
     requireOption(args, "ledger");
     requireOption(args, "out");
@@ -123,6 +146,43 @@ export async function runCli(argv) {
   }
 
   throw new Error(`Unknown command: ${command}\n\n${HELP}`);
+}
+
+export function parseVerificationChecklist(markdown) {
+  const entries = [];
+  let current = null;
+
+  for (const line of markdown.split(/\r?\n/)) {
+    const heading = line.match(/^##\s+(.+?)\s*$/);
+    if (heading) {
+      current = {
+        title: heading[1].trim(),
+        files: [],
+        commands: [],
+      };
+      entries.push(current);
+      continue;
+    }
+
+    if (!current) {
+      continue;
+    }
+
+    const bullet = line.match(/^-\s+(.+?)\s*$/);
+    if (!bullet) {
+      continue;
+    }
+
+    const value = bullet[1].trim();
+    const file = value.match(/^`(.+?)`$/);
+    if (file) {
+      current.files.push(file[1]);
+    } else {
+      current.commands.push(value);
+    }
+  }
+
+  return entries.filter((entry) => entry.commands.length > 0);
 }
 
 export function parseArgs(argv) {
