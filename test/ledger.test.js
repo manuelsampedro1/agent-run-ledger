@@ -25,6 +25,7 @@ import {
   parseReviewPacket,
   parseReviewPacketCiEvidence,
   parseReviewPacketReadiness,
+  parseReviewPacketSensitiveChanges,
   parseVerificationChecklist,
   readinessEventsFromReport,
   readinessEventsFromVerificationEnvelope,
@@ -1073,6 +1074,85 @@ Focus: Check correctness and regressions.
   assert.deepEqual(packet.verificationEntries, []);
 });
 
+test("parseReviewPacket extracts sensitive changes without polluting review lanes", () => {
+  const packet = parseReviewPacket(`# Review Packet
+
+Repo: \`/tmp/repo\`
+Base: \`origin/main\`
+
+## Changed Files
+
+- \`.env\`
+- \`permission_protocol/client.py\`
+- \`scripts/deploy.sh\`
+
+## Review Map
+
+### Security and permissions
+
+Focus: Check auth, approval, and secret-handling behavior.
+
+- \`permission_protocol/client.py\`
+
+### CI and release
+
+Focus: Check release and deployment assumptions.
+
+- \`scripts/deploy.sh\`
+
+## Sensitive Change Check
+
+These paths need explicit risk review before merge.
+
+### Secret material
+
+- \`.env\`
+
+### Authorization and approval
+
+- \`permission_protocol/client.py\`
+
+### Deploy or release path
+
+- \`scripts/deploy.sh\`
+`);
+
+  assert.deepEqual(packet.lanes, [
+    {
+      title: "Security and permissions",
+      focus: "Check auth, approval, and secret-handling behavior.",
+      files: ["permission_protocol/client.py"],
+    },
+    {
+      title: "CI and release",
+      focus: "Check release and deployment assumptions.",
+      files: ["scripts/deploy.sh"],
+    },
+  ]);
+  assert.deepEqual(packet.sensitiveChanges, [
+    {
+      title: "Secret material",
+      files: [".env"],
+    },
+    {
+      title: "Authorization and approval",
+      files: ["permission_protocol/client.py"],
+    },
+    {
+      title: "Deploy or release path",
+      files: ["scripts/deploy.sh"],
+    },
+  ]);
+});
+
+test("parseReviewPacketSensitiveChanges ignores empty sections", () => {
+  assert.deepEqual(parseReviewPacketSensitiveChanges(""), []);
+  assert.deepEqual(parseReviewPacketSensitiveChanges(`These paths need explicit risk review before merge.
+
+### Secret material
+`), []);
+});
+
 test("parseReviewPacketCiEvidence extracts embedded GitHub Actions evidence", () => {
   const run = parseReviewPacketCiEvidence(`Source: \`/tmp/ci-run.json\`
 
@@ -1318,6 +1398,55 @@ Source: \`/tmp/ci-run.json\`
     "https://github.com/example/repo/commit/25b526a",
   ]);
   assert.match(events[2].summary, /sha 25b526a9aa7e252d3da12fc26e10affb40bfc1cd/);
+});
+
+test("reviewPacketEvents imports sensitive change checks as blockers", () => {
+  const packet = parseReviewPacket(`# Review Packet
+
+Repo: \`/tmp/repo\`
+Base: \`origin/main\`
+
+## Changed Files
+
+- \`.env\`
+- \`permission_protocol/client.py\`
+
+## Review Map
+
+### Security and permissions
+
+Focus: Check permission behavior and secret handling.
+
+- \`permission_protocol/client.py\`
+
+## Sensitive Change Check
+
+These paths need explicit risk review before merge.
+
+### Secret material
+
+- \`.env\`
+
+### Authorization and approval
+
+- \`permission_protocol/client.py\`
+`);
+
+  const events = reviewPacketEvents(packet, {
+    source: "/tmp/review-packet.md",
+    link: "https://github.com/example/repo/commit/abc",
+  });
+  const summary = summarize(events);
+
+  assert.equal(events.length, 4);
+  assert.equal(events[2].type, "blocker");
+  assert.equal(events[2].status, "blocked");
+  assert.equal(events[2].title, "Sensitive change: Secret material");
+  assert.deepEqual(events[2].files, ["/tmp/review-packet.md", ".env"]);
+  assert.deepEqual(events[2].links, ["https://github.com/example/repo/commit/abc"]);
+  assert.equal(events[3].title, "Sensitive change: Authorization and approval");
+  assert.deepEqual(events[3].files, ["/tmp/review-packet.md", "permission_protocol/client.py"]);
+  assert.equal(summary.attention.length, 2);
 });
 
 test("import-review-packet appends packet summary, review lane, and planned verification events", async () => {

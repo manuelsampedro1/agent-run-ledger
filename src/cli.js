@@ -35,6 +35,7 @@ Options:
 const REVIEW_PACKET_SECTIONS = new Set([
   "Changed Files",
   "Review Map",
+  "Sensitive Change Check",
   "Repo Context",
   "Repo Readiness",
   "CI Evidence",
@@ -624,16 +625,46 @@ export function parseReviewPacketCiEvidence(section) {
   };
 }
 
+export function parseReviewPacketSensitiveChanges(section) {
+  const categories = [];
+  let current = null;
+
+  for (const line of section.split(/\r?\n/)) {
+    const heading = line.match(/^###\s+(.+?)\s*$/);
+    if (heading) {
+      current = {
+        title: heading[1].trim(),
+        files: [],
+      };
+      categories.push(current);
+      continue;
+    }
+
+    if (!current) {
+      continue;
+    }
+
+    const bullet = line.match(/^-\s+`(.+?)`\s*$/);
+    if (bullet) {
+      current.files.push(bullet[1]);
+    }
+  }
+
+  return categories.filter((category) => category.files.length > 0);
+}
+
 export function parseReviewPacket(content) {
   const repo = firstInlineCode(content.match(/^Repo:\s+(.+?)\s*$/m)?.[1] ?? "") ?? "";
   const base = firstInlineCode(content.match(/^Base:\s+(.+?)\s*$/m)?.[1] ?? "") ?? "";
   const changedSection = markdownSection(content, "Changed Files");
   const reviewMapSection = markdownSection(content, "Review Map");
+  const sensitiveChangeSection = markdownSection(content, "Sensitive Change Check");
   const readinessSection = markdownSection(content, "Repo Readiness");
   const ciEvidenceSection = markdownSection(content, "CI Evidence");
   const verificationSection = markdownSection(content, "Verification Checklist");
   const changedFiles = inlineCodeBullets(changedSection);
   const lanes = parseReviewMap(reviewMapSection);
+  const sensitiveChanges = parseReviewPacketSensitiveChanges(sensitiveChangeSection);
   const readinessReport = parseReviewPacketReadiness(readinessSection);
   const ciRun = parseReviewPacketCiEvidence(ciEvidenceSection);
   const verificationEnvelope = parseRenderedVerificationEnvelope(verificationSection);
@@ -644,6 +675,7 @@ export function parseReviewPacket(content) {
     base,
     changedFiles,
     lanes,
+    sensitiveChanges,
     readinessReport,
     ciRun,
     verificationEnvelope,
@@ -673,6 +705,15 @@ export function reviewPacketEvents(packet, options = {}) {
     title: `Review lane: ${lane.title}`,
     summary: lane.focus || `Review ${lane.files.length} file${lane.files.length === 1 ? "" : "s"} in this lane.`,
     files: lane.files,
+    links,
+  }));
+
+  const sensitiveEvents = (packet.sensitiveChanges ?? []).map((category) => createEvent({
+    type: "blocker",
+    title: `Sensitive change: ${category.title}`,
+    summary: `Review packet flagged ${category.files.length} ${category.files.length === 1 ? "path" : "paths"} that need explicit risk review before merge.`,
+    status: "blocked",
+    files: uniqueStrings([String(source), ...category.files]),
     links,
   }));
 
@@ -706,7 +747,7 @@ export function reviewPacketEvents(packet, options = {}) {
     links,
   }));
 
-  return [summaryEvent, ...laneEvents, ...ciEvidenceEvents, ...readinessEvents, ...verificationEvents];
+  return [summaryEvent, ...laneEvents, ...sensitiveEvents, ...ciEvidenceEvents, ...readinessEvents, ...verificationEvents];
 }
 
 export function doctorNeedsAttention(summary) {
