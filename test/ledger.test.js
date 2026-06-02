@@ -17,10 +17,12 @@ import {
   parseArgs,
   parseChecklistInput,
   parseJsonVerificationEnvelope,
+  parseVerificationEnvelopeReadiness,
   parseRepoReadinessReport,
   parseReviewPacket,
   parseVerificationChecklist,
   readinessEventsFromReport,
+  readinessEventsFromVerificationEnvelope,
   reviewPacketEvents,
   runCli,
 } from "../src/cli.js";
@@ -317,6 +319,79 @@ test("parseJsonVerificationEnvelope extracts verify-by-change categories", () =>
   ]);
 });
 
+test("parseVerificationEnvelopeReadiness extracts embedded repo readiness", () => {
+  const report = parseVerificationEnvelopeReadiness(JSON.stringify({
+    schema_version: "verify-by-change.v1",
+    source: {
+      type: "review_packet",
+    },
+    changed_files: ["README.md"],
+    empty: false,
+    categories: {
+      docs: {
+        files: ["README.md"],
+        commands: ["Review rendered Markdown and verify links if public-facing."],
+      },
+    },
+    repo_readiness: {
+      present: true,
+      contract: "repo-flightcheck.agent-contract.v1",
+      ready: false,
+      score: 96,
+      points_possible: 100,
+      threshold: 80,
+      stack: "python",
+      required_blockers: 1,
+      recommendations: 2,
+      failed: null,
+      critical_failures: 0,
+    },
+  }));
+
+  assert.equal(report.stack, "python");
+  assert.equal(report.summary.score, 96);
+  assert.equal(report.summary.pointsPossible, 100);
+  assert.equal(report.summary.requiredBlockers, 1);
+  assert.equal(report.summary.warnings, 2);
+  assert.equal(report.summary.failed, 1);
+  assert.deepEqual(report.checks, []);
+});
+
+test("readinessEventsFromVerificationEnvelope records embedded readiness status", () => {
+  const events = readinessEventsFromVerificationEnvelope(JSON.stringify({
+    schema_version: "verify-by-change.v1",
+    source: {
+      type: "review_packet",
+    },
+    changed_files: ["README.md"],
+    empty: false,
+    categories: {
+      docs: {
+        files: ["README.md"],
+        commands: ["Review rendered Markdown and verify links if public-facing."],
+      },
+    },
+    repo_readiness: {
+      present: true,
+      ready: false,
+      score: 96,
+      points_possible: 100,
+      required_blockers: 1,
+      recommendations: 0,
+      critical_failures: 0,
+    },
+  }), {
+    source: "/tmp/verification-envelope.json",
+  });
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, "command");
+  assert.equal(events[0].title, "Repo readiness: 96/100");
+  assert.equal(events[0].status, "blocked");
+  assert.ok(events[0].summary.includes("1 required blockers"));
+  assert.deepEqual(events[0].files, ["/tmp/verification-envelope.json"]);
+});
+
 test("parseChecklistInput falls back to markdown when JSON envelope is absent", () => {
   const entries = parseChecklistInput(`# Verification Checklist
 
@@ -401,6 +476,51 @@ test("import-checklist appends planned command events from JSON envelope", async
     assert.deepEqual(events.map((event) => event.title), ["Verify python", "Verify docs"]);
     assert.deepEqual(events.map((event) => event.status), ["planned", "planned"]);
     assert.deepEqual(events[0].files, ["verify_by_change.py"]);
+    assert.deepEqual(events[1].commands, ["Review rendered Markdown and verify links if public-facing."]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("import-checklist appends readiness evidence from JSON envelope", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ledger-test-"));
+
+  try {
+    const ledgerPath = join(dir, "ledger.jsonl");
+    const checklistPath = join(dir, "verification-envelope.json");
+    await writeFile(checklistPath, JSON.stringify({
+      schema_version: "verify-by-change.v1",
+      source: {
+        type: "review_packet",
+      },
+      changed_files: ["README.md"],
+      empty: false,
+      categories: {
+        docs: {
+          files: ["README.md"],
+          commands: ["Review rendered Markdown and verify links if public-facing."],
+        },
+      },
+      repo_readiness: {
+        present: true,
+        ready: true,
+        score: 100,
+        points_possible: 100,
+        required_blockers: 0,
+        recommendations: 0,
+        critical_failures: 0,
+      },
+    }), "utf8");
+
+    await runCli(["import-checklist", "--ledger", ledgerPath, "--checklist", checklistPath]);
+    const events = await readLedger(ledgerPath);
+
+    assert.equal(events.length, 2);
+    assert.equal(events[0].title, "Repo readiness: 100/100");
+    assert.equal(events[0].status, "passed");
+    assert.deepEqual(events[0].files, [checklistPath]);
+    assert.equal(events[1].title, "Verify docs");
+    assert.equal(events[1].status, "planned");
     assert.deepEqual(events[1].commands, ["Review rendered Markdown and verify links if public-facing."]);
   } finally {
     await rm(dir, { recursive: true, force: true });

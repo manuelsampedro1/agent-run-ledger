@@ -123,7 +123,11 @@ export async function runCli(argv) {
 
     const content = await readFile(args.checklist, "utf8");
     const entries = parseChecklistInput(content);
-    const events = entries.map((entry) => createEvent({
+    const readinessEvents = readinessEventsFromVerificationEnvelope(content, {
+      source: args.checklist,
+      link: args.link,
+    });
+    const verificationEvents = entries.map((entry) => createEvent({
       type: "command",
       title: `Verify ${entry.title}`,
       summary: `Imported verification checklist section from ${args.checklist}.`,
@@ -131,6 +135,7 @@ export async function runCli(argv) {
       files: entry.files,
       commands: entry.commands,
     }));
+    const events = [...readinessEvents, ...verificationEvents];
 
     for (const event of events) {
       await appendEvent(args.ledger, event);
@@ -220,6 +225,21 @@ export function parseChecklistInput(content) {
 }
 
 export function parseJsonVerificationEnvelope(content) {
+  const payload = parseJsonVerificationEnvelopePayload(content);
+  if (!payload) {
+    return null;
+  }
+
+  return Object.entries(payload.categories)
+    .map(([title, category]) => ({
+      title: String(title),
+      files: Array.isArray(category?.files) ? category.files.map(String) : [],
+      commands: Array.isArray(category?.commands) ? category.commands.map(String) : [],
+    }))
+    .filter((entry) => entry.commands.length > 0);
+}
+
+export function parseJsonVerificationEnvelopePayload(content) {
   let payload;
   try {
     payload = JSON.parse(content);
@@ -231,13 +251,26 @@ export function parseJsonVerificationEnvelope(content) {
     return null;
   }
 
-  return Object.entries(payload.categories)
-    .map(([title, category]) => ({
-      title: String(title),
-      files: Array.isArray(category?.files) ? category.files.map(String) : [],
-      commands: Array.isArray(category?.commands) ? category.commands.map(String) : [],
-    }))
-    .filter((entry) => entry.commands.length > 0);
+  return payload;
+}
+
+export function parseVerificationEnvelopeReadiness(content) {
+  const payload = parseJsonVerificationEnvelopePayload(content);
+  const readiness = payload?.repo_readiness;
+  if (!readiness || typeof readiness !== "object" || Array.isArray(readiness)) {
+    return null;
+  }
+
+  return normalizeVerificationEnvelopeReadiness(readiness);
+}
+
+export function readinessEventsFromVerificationEnvelope(content, options = {}) {
+  const report = parseVerificationEnvelopeReadiness(content);
+  if (!report) {
+    return [];
+  }
+
+  return readinessEventsFromReport(report, options);
 }
 
 export function parseVerificationChecklist(markdown) {
@@ -345,6 +378,29 @@ function normalizeReadinessContract(payload) {
     },
     checks: [...required, ...recommended],
     nextFixes: Array.isArray(payload.nextFixes) ? payload.nextFixes.map(String) : [],
+  };
+}
+
+function normalizeVerificationEnvelopeReadiness(readiness) {
+  const requiredBlockers = optionalNumber(readiness.required_blockers, readiness.ready === false ? 1 : 0);
+  const criticalFailures = optionalNumber(readiness.critical_failures, 0);
+  const failed = optionalNumber(readiness.failed, requiredBlockers);
+  const recommendations = optionalNumber(readiness.recommendations, 0);
+  const warnings = optionalNumber(readiness.warnings, recommendations);
+
+  return {
+    stack: String(readiness.stack ?? "unknown"),
+    summary: {
+      score: optionalNumber(readiness.score, 0),
+      pointsPossible: optionalNumber(readiness.points_possible, 100),
+      passed: optionalNumber(readiness.passed, readiness.ready === true ? 1 : 0),
+      warnings,
+      failed,
+      criticalFailures,
+      requiredBlockers,
+    },
+    checks: [],
+    nextFixes: [],
   };
 }
 
@@ -554,6 +610,13 @@ function looksLikeFile(value) {
 function numberOrDefault(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
+}
+
+function optionalNumber(value, fallback) {
+  if (value === null || value === undefined || value === "") {
+    return fallback;
+  }
+  return numberOrDefault(value, fallback);
 }
 
 function markdownSection(markdown, title) {
