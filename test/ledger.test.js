@@ -18,8 +18,10 @@ import {
   parseChecklistInput,
   parseJsonVerificationEnvelope,
   parseRepoReadinessReport,
+  parseReviewPacket,
   parseVerificationChecklist,
   readinessEventsFromReport,
+  reviewPacketEvents,
   runCli,
 } from "../src/cli.js";
 import { renderReport } from "../src/report.js";
@@ -552,6 +554,142 @@ test("import-readiness appends summary and attention events", async () => {
     assert.equal(events[0].status, "blocked");
     assert.equal(events[1].type, "blocker");
     assert.equal(summary.attention.length, 2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("parseReviewPacket extracts repo, base, changed files, and review lanes", () => {
+  const packet = parseReviewPacket(`# Review Packet
+
+Repo: \`/tmp/repo\`
+Base: \`working tree\`
+
+## Changed Files
+
+- \`README.md\`
+- \`src/app.js\`
+
+## Review Map
+
+### Product and docs
+
+Focus: Check user-facing claims and TODO follow-through.
+
+- \`README.md\`
+
+### Application code
+
+Focus: Check correctness and regressions.
+
+- \`src/app.js\`
+
+## Diff
+
+\`\`\`diff
+...
+\`\`\`
+`);
+
+  assert.equal(packet.repo, "/tmp/repo");
+  assert.equal(packet.base, "working tree");
+  assert.deepEqual(packet.changedFiles, ["README.md", "src/app.js"]);
+  assert.deepEqual(packet.lanes, [
+    {
+      title: "Product and docs",
+      focus: "Check user-facing claims and TODO follow-through.",
+      files: ["README.md"],
+    },
+    {
+      title: "Application code",
+      focus: "Check correctness and regressions.",
+      files: ["src/app.js"],
+    },
+  ]);
+});
+
+test("reviewPacketEvents turns review packet lanes into ledger evidence", () => {
+  const packet = parseReviewPacket(`# Review Packet
+
+Repo: \`/tmp/repo\`
+Base: \`origin/main\`
+
+## Changed Files
+
+- \`README.md\`
+
+## Review Map
+
+### Product and docs
+
+Focus: Check docs.
+
+- \`README.md\`
+`);
+
+  const events = reviewPacketEvents(packet, {
+    source: "/tmp/review-packet.md",
+    command: "python3 codex_review_packet.py --repo .",
+    link: "https://github.com/example/repo/commit/abc",
+  });
+
+  assert.equal(events.length, 2);
+  assert.equal(events[0].type, "decision");
+  assert.equal(events[0].status, "done");
+  assert.equal(events[0].title, "Review packet: 1 changed file");
+  assert.deepEqual(events[0].files, ["/tmp/review-packet.md", "README.md"]);
+  assert.deepEqual(events[0].commands, ["python3 codex_review_packet.py --repo ."]);
+  assert.deepEqual(events[0].links, ["https://github.com/example/repo/commit/abc"]);
+  assert.equal(events[1].title, "Review lane: Product and docs");
+  assert.equal(events[1].summary, "Check docs.");
+});
+
+test("import-review-packet appends packet summary and review lane events", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ledger-test-"));
+
+  try {
+    const ledgerPath = join(dir, "ledger.jsonl");
+    const packetPath = join(dir, "review-packet.md");
+    await writeFile(packetPath, `# Review Packet
+
+Repo: \`/tmp/repo\`
+Base: \`working tree\`
+
+## Changed Files
+
+- \`README.md\`
+- \`src/app.js\`
+
+## Review Map
+
+### Product and docs
+
+Focus: Check docs.
+
+- \`README.md\`
+
+### Application code
+
+Focus: Check app behavior.
+
+- \`src/app.js\`
+`, "utf8");
+
+    await runCli([
+      "import-review-packet",
+      "--ledger", ledgerPath,
+      "--packet", packetPath,
+      "--command", "python3 codex_review_packet.py --repo .",
+    ]);
+    const events = await readLedger(ledgerPath);
+    const summary = summarize(events);
+
+    assert.equal(events.length, 3);
+    assert.equal(events[0].title, "Review packet: 2 changed files");
+    assert.deepEqual(events.map((event) => event.type), ["decision", "decision", "decision"]);
+    assert.ok(summary.files.includes(packetPath));
+    assert.ok(summary.files.includes("src/app.js"));
+    assert.equal(summary.commands[0].command, "python3 codex_review_packet.py --repo .");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

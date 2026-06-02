@@ -17,6 +17,7 @@ Usage:
   agent-run-ledger note --ledger <path> --type <type> --title <text> --summary <text>
   agent-run-ledger import-checklist --ledger <path> --checklist <path> [--status planned]
   agent-run-ledger import-readiness --ledger <path> --readiness-report <path> [--command <cmd>]
+  agent-run-ledger import-review-packet --ledger <path> --packet <path> [--command <cmd>]
   agent-run-ledger doctor --ledger <path> [--json] [--strict]
   agent-run-ledger report --ledger <path> --out <path>
   agent-run-ledger demo --out <dir>
@@ -147,6 +148,27 @@ export async function runCli(argv) {
     }
 
     console.log(`Imported repo readiness report as ${events.length} event${events.length === 1 ? "" : "s"} into ${args.ledger}`);
+    return;
+  }
+
+  if (command === "import-review-packet") {
+    requireOption(args, "ledger");
+    requireOption(args, "packet");
+
+    const content = await readFile(args.packet, "utf8");
+    const packet = parseReviewPacket(content);
+    const events = reviewPacketEvents(packet, {
+      source: args.packet,
+      command: args.command,
+      link: args.link,
+      status: args.status,
+    });
+
+    for (const event of events) {
+      await appendEvent(args.ledger, event);
+    }
+
+    console.log(`Imported review packet as ${events.length} event${events.length === 1 ? "" : "s"} into ${args.ledger}`);
     return;
   }
 
@@ -315,6 +337,50 @@ export function readinessEventsFromReport(report, options = {}) {
   return [summaryEvent, ...attentionEvents];
 }
 
+export function parseReviewPacket(content) {
+  const repo = firstInlineCode(content.match(/^Repo:\s+(.+?)\s*$/m)?.[1] ?? "") ?? "";
+  const base = firstInlineCode(content.match(/^Base:\s+(.+?)\s*$/m)?.[1] ?? "") ?? "";
+  const changedSection = markdownSection(content, "Changed Files");
+  const reviewMapSection = markdownSection(content, "Review Map");
+  const changedFiles = inlineCodeBullets(changedSection);
+  const lanes = parseReviewMap(reviewMapSection);
+
+  return {
+    repo,
+    base,
+    changedFiles,
+    lanes,
+  };
+}
+
+export function reviewPacketEvents(packet, options = {}) {
+  const source = options.source ?? "review packet";
+  const commands = options.command ?? [];
+  const links = options.link ?? [];
+  const status = options.status ?? "done";
+  const packetFiles = [String(source), ...packet.changedFiles];
+
+  const summaryEvent = createEvent({
+    type: "decision",
+    title: `Review packet: ${packet.changedFiles.length} changed file${packet.changedFiles.length === 1 ? "" : "s"}`,
+    summary: `Imported codex-review-packet handoff from ${source}. Repo: ${packet.repo || "unknown"}. Base: ${packet.base || "unknown"}.`,
+    status,
+    files: packetFiles,
+    commands,
+    links,
+  });
+
+  const laneEvents = packet.lanes.map((lane) => createEvent({
+    type: "decision",
+    title: `Review lane: ${lane.title}`,
+    summary: lane.focus || `Review ${lane.files.length} file${lane.files.length === 1 ? "" : "s"} in this lane.`,
+    files: lane.files,
+    links,
+  }));
+
+  return [summaryEvent, ...laneEvents];
+}
+
 export function doctorNeedsAttention(summary) {
   return summary.openCommands.length > 0 || summary.attention.length > 0;
 }
@@ -409,4 +475,73 @@ function looksLikeFile(value) {
 function numberOrDefault(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
+}
+
+function markdownSection(markdown, title) {
+  const lines = markdown.split(/\r?\n/);
+  const selected = [];
+  let inside = false;
+
+  for (const line of lines) {
+    const heading = line.match(/^##\s+(.+?)\s*$/);
+    if (heading) {
+      if (inside) {
+        break;
+      }
+      inside = heading[1].trim() === title;
+      continue;
+    }
+
+    if (inside) {
+      selected.push(line);
+    }
+  }
+
+  return selected.join("\n");
+}
+
+function parseReviewMap(section) {
+  const lanes = [];
+  let current = null;
+
+  for (const line of section.split(/\r?\n/)) {
+    const heading = line.match(/^###\s+(.+?)\s*$/);
+    if (heading) {
+      current = {
+        title: heading[1].trim(),
+        focus: "",
+        files: [],
+      };
+      lanes.push(current);
+      continue;
+    }
+
+    if (!current) {
+      continue;
+    }
+
+    const focus = line.match(/^Focus:\s+(.+?)\s*$/);
+    if (focus) {
+      current.focus = focus[1].trim();
+      continue;
+    }
+
+    const bullet = line.match(/^-\s+`(.+?)`\s*$/);
+    if (bullet) {
+      current.files.push(bullet[1]);
+    }
+  }
+
+  return lanes.filter((lane) => lane.files.length > 0);
+}
+
+function inlineCodeBullets(section) {
+  return section
+    .split(/\r?\n/)
+    .map((line) => line.match(/^-\s+`(.+?)`\s*$/)?.[1])
+    .filter(Boolean);
+}
+
+function firstInlineCode(value) {
+  return value.match(/`(.+?)`/)?.[1] ?? null;
 }

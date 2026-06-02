@@ -98,6 +98,20 @@ node bin/agent-run-ledger.js import-readiness \
   --command "node /path/to/repo-flightcheck/bin/repo-flightcheck.js . --json"
 ```
 
+Import a review packet after a Codex or Claude Code handoff. This records the packet, changed files, and review lanes as ledger evidence:
+
+```bash
+python3 /path/to/codex-review-packet/codex_review_packet.py \
+  --repo . \
+  --verify-by-change /path/to/verify-by-change/verify_by_change.py \
+  --output /tmp/review-packet.md
+
+node bin/agent-run-ledger.js import-review-packet \
+  --ledger .agent-run/ledger.jsonl \
+  --packet /tmp/review-packet.md \
+  --command "python3 /path/to/codex-review-packet/codex_review_packet.py --repo . --verify-by-change /path/to/verify-by-change/verify_by_change.py"
+```
+
 Use strict doctor mode when a handoff should fail until planned checks are executed and blockers are resolved:
 
 ```bash
@@ -192,6 +206,7 @@ agent-run-ledger note --ledger .agent-run/ledger.jsonl --type decision --title "
 agent-run-ledger import-checklist --ledger .agent-run/ledger.jsonl --checklist /tmp/verification-checklist.md
 agent-run-ledger import-checklist --ledger .agent-run/ledger.jsonl --checklist /tmp/verification-envelope.json
 agent-run-ledger import-readiness --ledger .agent-run/ledger.jsonl --readiness-report /tmp/repo-readiness.json
+agent-run-ledger import-review-packet --ledger .agent-run/ledger.jsonl --packet /tmp/review-packet.md
 agent-run-ledger doctor --ledger .agent-run/ledger.jsonl
 agent-run-ledger doctor --ledger .agent-run/ledger.jsonl --json
 agent-run-ledger doctor --ledger .agent-run/ledger.jsonl --strict
