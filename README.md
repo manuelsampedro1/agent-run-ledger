@@ -98,7 +98,7 @@ The CLI accepts these event types:
 - `blocker`: anything that stopped or limited the run
 - `result`: final outcome and next review focus
 
-Statuses are optional except for command-like evidence. Accepted statuses:
+Statuses are optional except for command-like evidence. Events with `type: "command"` or any `commands` entries must include one of these statuses:
 
 - `planned`
 - `running`
@@ -128,7 +128,7 @@ Optional fields:
 
 - `files`: changed or relevant paths
 - `commands`: shell commands used as evidence
-- `status`: outcome marker
+- `status`: outcome marker; required for command events or events with `commands`
 - `links`: related URLs or issue references
 
 ## Practical Workflow

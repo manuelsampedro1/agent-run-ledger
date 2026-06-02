@@ -47,6 +47,38 @@ test("validateEvent rejects unsupported types and statuses", () => {
   assert.ok(errors.some((error) => error.includes("valid ISO timestamp")));
 });
 
+test("validateEvent requires status for command evidence", () => {
+  const commandEventErrors = validateEvent({
+    id: "evt_command",
+    ts: "2026-06-01T10:00:00.000Z",
+    type: "command",
+    title: "Run tests",
+    summary: "Tests ran",
+    commands: ["npm test"],
+  });
+  const decisionWithCommandErrors = validateEvent({
+    id: "evt_decision_command",
+    ts: "2026-06-01T10:00:00.000Z",
+    type: "decision",
+    title: "Use targeted tests",
+    summary: "Recorded a command as evidence.",
+    commands: ["npm test"],
+  });
+  const validErrors = validateEvent({
+    id: "evt_command_status",
+    ts: "2026-06-01T10:00:00.000Z",
+    type: "command",
+    title: "Run tests",
+    summary: "Tests passed",
+    commands: ["npm test"],
+    status: "passed",
+  });
+
+  assert.ok(commandEventErrors.some((error) => error.includes("status is required for command evidence")));
+  assert.ok(decisionWithCommandErrors.some((error) => error.includes("status is required for command evidence")));
+  assert.deepEqual(validErrors, []);
+});
+
 test("ledger writes, reads, sorts, and summarizes events", async () => {
   const dir = await mkdtemp(join(tmpdir(), "ledger-test-"));
 
@@ -96,6 +128,27 @@ test("appendEvent creates parent directories", async () => {
 
     const content = await readFile(ledgerPath, "utf8");
     assert.match(content, /Choose scope/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("CLI rejects command notes without status", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ledger-test-"));
+
+  try {
+    const ledgerPath = join(dir, "ledger.jsonl");
+    await assert.rejects(
+      runCli([
+        "note",
+        "--ledger", ledgerPath,
+        "--type", "command",
+        "--title", "Run tests",
+        "--summary", "Tests ran.",
+        "--command", "npm test",
+      ]),
+      /status is required for command evidence/,
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

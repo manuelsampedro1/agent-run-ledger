@@ -66,6 +66,10 @@ export function validateEvent(event, lineNumber = 0) {
     errors.push(`${prefix}status must be one of ${Array.from(STATUSES).join(", ")}`);
   }
 
+  if (requiresCommandStatus(event) && !event.status) {
+    errors.push(`${prefix}status is required for command evidence`);
+  }
+
   for (const key of ["files", "commands", "links"]) {
     if (event[key] !== undefined && !isStringArray(event[key])) {
       errors.push(`${prefix}${key} must be an array of strings`);
@@ -252,4 +256,8 @@ function toArray(value) {
 
 function isStringArray(value) {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function requiresCommandStatus(event) {
+  return event.type === "command" || (Array.isArray(event.commands) && event.commands.length > 0);
 }
