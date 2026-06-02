@@ -37,6 +37,7 @@ const REVIEW_PACKET_SECTIONS = new Set([
   "Review Map",
   "Repo Context",
   "Repo Readiness",
+  "CI Evidence",
   "Diff",
   "Verification Checklist",
   "Suggested Review Prompt",
@@ -411,8 +412,9 @@ export function parseGitHubActionsRun(content) {
 
 export function ciRunEvent(run, options = {}) {
   const source = options.source ?? "CI run report";
-  const commands = options.command?.length ? options.command : [`GitHub Actions: ${run.name}`];
-  const links = uniqueStrings([run.htmlUrl, ...(options.link ?? [])].filter(Boolean));
+  const commands = optionValues(options.command);
+  const links = uniqueStrings([run.htmlUrl, ...optionValues(options.link)].filter(Boolean));
+  const files = uniqueStrings([String(source), ...optionValues(options.files)]);
   const detail = [
     `status ${run.status}`,
     run.conclusion ? `conclusion ${run.conclusion}` : null,
@@ -425,8 +427,8 @@ export function ciRunEvent(run, options = {}) {
     title: `CI ${ciRunStatus(run)}: ${run.name}`,
     summary: `Imported GitHub Actions run ${run.id} from ${source}: ${detail}.`,
     status: ciRunStatus(run),
-    files: [String(source)],
-    commands,
+    files,
+    commands: commands.length ? commands : [`GitHub Actions: ${run.name}`],
     links,
   });
 }
@@ -572,16 +574,44 @@ export function parseReviewPacketReadiness(section) {
   };
 }
 
+export function parseReviewPacketCiEvidence(section) {
+  if (!section.trim()) {
+    return null;
+  }
+
+  const id = markdownInlineMetric(section, "Run");
+  const name = markdownInlineMetric(section, "Workflow");
+  const status = markdownInlineMetric(section, "Status");
+  if (!id || !name || !status) {
+    return null;
+  }
+
+  const conclusion = markdownInlineMetric(section, "Conclusion");
+  return {
+    id,
+    name,
+    status,
+    conclusion: conclusion && conclusion.toLowerCase() !== "null" ? conclusion : null,
+    htmlUrl: markdownUrlMetric(section, "URL") ?? "",
+    headSha: markdownInlineMetric(section, "SHA") ?? "",
+    headBranch: markdownInlineMetric(section, "Branch") ?? "",
+    event: markdownInlineMetric(section, "Event") ?? "",
+    source: firstInlineCode(section.match(/^Source:\s+(.+?)\s*$/m)?.[1] ?? "") ?? "",
+  };
+}
+
 export function parseReviewPacket(content) {
   const repo = firstInlineCode(content.match(/^Repo:\s+(.+?)\s*$/m)?.[1] ?? "") ?? "";
   const base = firstInlineCode(content.match(/^Base:\s+(.+?)\s*$/m)?.[1] ?? "") ?? "";
   const changedSection = markdownSection(content, "Changed Files");
   const reviewMapSection = markdownSection(content, "Review Map");
   const readinessSection = markdownSection(content, "Repo Readiness");
+  const ciEvidenceSection = markdownSection(content, "CI Evidence");
   const verificationSection = markdownSection(content, "Verification Checklist");
   const changedFiles = inlineCodeBullets(changedSection);
   const lanes = parseReviewMap(reviewMapSection);
   const readinessReport = parseReviewPacketReadiness(readinessSection);
+  const ciRun = parseReviewPacketCiEvidence(ciEvidenceSection);
   const verificationEntries = parseChecklistInput(verificationSection);
 
   return {
@@ -590,6 +620,7 @@ export function parseReviewPacket(content) {
     changedFiles,
     lanes,
     readinessReport,
+    ciRun,
     verificationEntries,
   };
 }
@@ -626,6 +657,14 @@ export function reviewPacketEvents(packet, options = {}) {
     })
     : [];
 
+  const ciEvidenceEvents = packet.ciRun
+    ? [ciRunEvent(packet.ciRun, {
+      source,
+      files: packet.ciRun.source ? [packet.ciRun.source] : [],
+      link: links,
+    })]
+    : [];
+
   const verificationEvents = (packet.verificationEntries ?? []).map((entry) => createEvent({
     type: "command",
     title: `Verify ${entry.title}`,
@@ -636,7 +675,7 @@ export function reviewPacketEvents(packet, options = {}) {
     links,
   }));
 
-  return [summaryEvent, ...laneEvents, ...readinessEvents, ...verificationEvents];
+  return [summaryEvent, ...laneEvents, ...ciEvidenceEvents, ...readinessEvents, ...verificationEvents];
 }
 
 export function doctorNeedsAttention(summary) {
@@ -759,6 +798,13 @@ function uniqueStrings(values) {
   return Array.from(new Set(values.map(String).filter(Boolean)));
 }
 
+function optionValues(value) {
+  if (value === undefined || value === null || value === "") {
+    return [];
+  }
+  return Array.isArray(value) ? value : [value];
+}
+
 function markdownSection(markdown, title) {
   const lines = markdown.split(/\r?\n/);
   const headings = [];
@@ -878,6 +924,10 @@ function parseReviewPacketNextFixes(section) {
 
 function markdownInlineMetric(markdown, label) {
   return markdown.match(new RegExp(`^- ${escapeRegExp(label)}: \`([^\`]+)\``, "m"))?.[1] ?? null;
+}
+
+function markdownUrlMetric(markdown, label) {
+  return markdown.match(new RegExp(`^- ${escapeRegExp(label)}: <([^>]+)>`, "m"))?.[1] ?? null;
 }
 
 function markdownBoolMetric(markdown, label) {

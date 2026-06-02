@@ -22,6 +22,7 @@ import {
   parseVerificationEnvelopeReadiness,
   parseRepoReadinessReport,
   parseReviewPacket,
+  parseReviewPacketCiEvidence,
   parseReviewPacketReadiness,
   parseVerificationChecklist,
   readinessEventsFromReport,
@@ -1039,6 +1040,45 @@ Focus: Check correctness and regressions.
   assert.deepEqual(packet.verificationEntries, []);
 });
 
+test("parseReviewPacketCiEvidence extracts embedded GitHub Actions evidence", () => {
+  const run = parseReviewPacketCiEvidence(`Source: \`/tmp/ci-run.json\`
+
+- Run: \`26801172625\`
+- Workflow: \`CI\`
+- Status: \`completed\`
+- Conclusion: \`success\`
+- Branch: \`main\`
+- SHA: \`25b526a9aa7e252d3da12fc26e10affb40bfc1cd\`
+- Event: \`push\`
+- URL: <https://github.com/example/repo/actions/runs/26801172625>
+`);
+
+  assert.deepEqual(run, {
+    id: "26801172625",
+    name: "CI",
+    status: "completed",
+    conclusion: "success",
+    htmlUrl: "https://github.com/example/repo/actions/runs/26801172625",
+    headSha: "25b526a9aa7e252d3da12fc26e10affb40bfc1cd",
+    headBranch: "main",
+    event: "push",
+    source: "/tmp/ci-run.json",
+  });
+});
+
+test("parseReviewPacketCiEvidence treats null conclusions as incomplete evidence", () => {
+  const run = parseReviewPacketCiEvidence(`Source: \`/tmp/ci-run.json\`
+
+- Run: \`123\`
+- Workflow: \`CI\`
+- Status: \`in_progress\`
+- Conclusion: \`null\`
+`);
+
+  assert.equal(run.conclusion, null);
+  assert.equal(ciRunEvent(run).status, "running");
+});
+
 test("parseReviewPacket extracts embedded verification checklist from fenced packet section", () => {
   const packet = parseReviewPacket(`# Review Packet
 
@@ -1176,6 +1216,56 @@ Required before agent:
   assert.deepEqual(events[4].commands, ["Review rendered Markdown."]);
 });
 
+test("reviewPacketEvents imports embedded CI evidence from review packets", () => {
+  const packet = parseReviewPacket(`# Review Packet
+
+Repo: \`/tmp/repo\`
+Base: \`origin/main\`
+
+## Changed Files
+
+- \`README.md\`
+
+## Review Map
+
+### Product and docs
+
+Focus: Check docs.
+
+- \`README.md\`
+
+## CI Evidence
+
+Source: \`/tmp/ci-run.json\`
+
+- Run: \`26801172625\`
+- Workflow: \`CI\`
+- Status: \`completed\`
+- Conclusion: \`success\`
+- Branch: \`main\`
+- SHA: \`25b526a9aa7e252d3da12fc26e10affb40bfc1cd\`
+- Event: \`push\`
+- URL: <https://github.com/example/repo/actions/runs/26801172625>
+`);
+
+  const events = reviewPacketEvents(packet, {
+    source: "/tmp/review-packet.md",
+    link: "https://github.com/example/repo/commit/25b526a",
+  });
+
+  assert.equal(events.length, 3);
+  assert.equal(events[2].type, "command");
+  assert.equal(events[2].title, "CI passed: CI");
+  assert.equal(events[2].status, "passed");
+  assert.deepEqual(events[2].files, ["/tmp/review-packet.md", "/tmp/ci-run.json"]);
+  assert.deepEqual(events[2].commands, ["GitHub Actions: CI"]);
+  assert.deepEqual(events[2].links, [
+    "https://github.com/example/repo/actions/runs/26801172625",
+    "https://github.com/example/repo/commit/25b526a",
+  ]);
+  assert.match(events[2].summary, /sha 25b526a9aa7e252d3da12fc26e10affb40bfc1cd/);
+});
+
 test("import-review-packet appends packet summary, review lane, and planned verification events", async () => {
   const dir = await mkdtemp(join(tmpdir(), "ledger-test-"));
 
@@ -1255,6 +1345,64 @@ No required blockers or recommendations.
     assert.ok(summary.files.includes("src/app.js"));
     assert.equal(summary.commands[0].command, "python3 codex_review_packet.py --repo .");
     assert.equal(summary.openCommands.length, 2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("import-review-packet appends embedded CI evidence", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ledger-test-"));
+
+  try {
+    const ledgerPath = join(dir, "ledger.jsonl");
+    const packetPath = join(dir, "review-packet.md");
+    await writeFile(packetPath, `# Review Packet
+
+Repo: \`/tmp/repo\`
+Base: \`origin/main\`
+
+## Changed Files
+
+- \`README.md\`
+
+## Review Map
+
+### Product and docs
+
+Focus: Check docs.
+
+- \`README.md\`
+
+## CI Evidence
+
+Source: \`/tmp/ci-run.json\`
+
+- Run: \`26801172625\`
+- Workflow: \`CI\`
+- Status: \`completed\`
+- Conclusion: \`success\`
+- Branch: \`main\`
+- SHA: \`25b526a9aa7e252d3da12fc26e10affb40bfc1cd\`
+- Event: \`push\`
+- URL: <https://github.com/example/repo/actions/runs/26801172625>
+`, "utf8");
+
+    await runCli([
+      "import-review-packet",
+      "--ledger", ledgerPath,
+      "--packet", packetPath,
+    ]);
+    const events = await readLedger(ledgerPath);
+    const summary = summarize(events);
+
+    assert.equal(events.length, 3);
+    assert.equal(events[2].title, "CI passed: CI");
+    assert.equal(events[2].status, "passed");
+    assert.deepEqual(events[2].files, [packetPath, "/tmp/ci-run.json"]);
+    assert.equal(summary.commands.length, 1);
+    assert.equal(summary.commands[0].status, "passed");
+    assert.equal(summary.openCommands.length, 0);
+    assert.equal(summary.attention.length, 0);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

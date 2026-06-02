@@ -107,7 +107,7 @@ node bin/agent-run-ledger.js import-readiness \
   --command "node /path/to/repo-flightcheck/bin/repo-flightcheck.js . --contract"
 ```
 
-Import a review packet after a Codex or Claude Code handoff. This records the packet, changed files, review lanes, any embedded repo readiness section, and any embedded verification checklist as ledger evidence:
+Import a review packet after a Codex or Claude Code handoff. This records the packet, changed files, review lanes, any embedded CI evidence, any embedded repo readiness section, and any embedded verification checklist as ledger evidence:
 
 ```bash
 python3 /path/to/codex-review-packet/codex_review_packet.py \
@@ -121,7 +121,7 @@ node bin/agent-run-ledger.js import-review-packet \
   --command "python3 /path/to/codex-review-packet/codex_review_packet.py --repo . --verify-by-change /path/to/verify-by-change/verify_by_change.py"
 ```
 
-Embedded verification checks are imported as `planned` command events, so `doctor --strict` will keep the handoff open until those commands are recorded as passed, skipped, failed, or blocked.
+Embedded CI evidence is imported as command evidence with `passed`, `failed`, `running`, `planned`, `skipped`, or `done` status. Embedded verification checks are imported as `planned` command events, so `doctor --strict` will keep the handoff open until those commands are recorded as passed, skipped, failed, or blocked.
 
 Import GitHub Actions run evidence after a public push. Pass a JSON response from the GitHub Actions run API or the first item from a `workflow_runs` list response:
 
