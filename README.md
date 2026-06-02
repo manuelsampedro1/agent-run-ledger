@@ -88,7 +88,7 @@ node bin/agent-run-ledger.js import-checklist \
   --checklist /tmp/verification-envelope.json
 ```
 
-Import a repo readiness report before or after an agent run. This records a `repo-flightcheck --json` artifact as ledger evidence and turns failed critical checks into blocker events:
+Import a repo readiness report before or after an agent run. This records a `repo-flightcheck --json` report or `repo-flightcheck --contract` artifact as ledger evidence and turns required or failed checks into blocker events:
 
 ```bash
 node /path/to/repo-flightcheck/bin/repo-flightcheck.js . --json > /tmp/repo-readiness.json
@@ -96,6 +96,12 @@ node bin/agent-run-ledger.js import-readiness \
   --ledger .agent-run/ledger.jsonl \
   --readiness-report /tmp/repo-readiness.json \
   --command "node /path/to/repo-flightcheck/bin/repo-flightcheck.js . --json"
+
+node /path/to/repo-flightcheck/bin/repo-flightcheck.js . --contract > /tmp/repo-readiness-contract.json
+node bin/agent-run-ledger.js import-readiness \
+  --ledger .agent-run/ledger.jsonl \
+  --readiness-report /tmp/repo-readiness-contract.json \
+  --command "node /path/to/repo-flightcheck/bin/repo-flightcheck.js . --contract"
 ```
 
 Import a review packet after a Codex or Claude Code handoff. This records the packet, changed files, review lanes, and any embedded verification checklist as ledger evidence:

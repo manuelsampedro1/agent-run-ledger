@@ -438,6 +438,52 @@ test("parseRepoReadinessReport normalizes repo-flightcheck JSON", () => {
   assert.deepEqual(report.nextFixes, ["Verification command: expose one obvious test command."]);
 });
 
+test("parseRepoReadinessReport normalizes repo-flightcheck agent contracts", () => {
+  const report = parseRepoReadinessReport(JSON.stringify({
+    schemaVersion: "repo-flightcheck.agent-contract.v1",
+    stack: "node",
+    ready: false,
+    threshold: 80,
+    score: 96,
+    criticalFailures: 0,
+    commands: {
+      test: "npm test",
+      build: "npm run build",
+      lint: "npm run lint",
+    },
+    requiredBeforeAgent: [
+      {
+        title: "Working tree",
+        status: "warn",
+        severity: "high",
+        message: "Working tree has changed paths.",
+        fix: "Start from a clean Git state.",
+        evidence: [" M README.md"],
+      },
+    ],
+    recommendedBeforeAgent: [
+      {
+        title: "License",
+        status: "warn",
+        severity: "medium",
+        message: "No license file found.",
+        fix: "Add an explicit license.",
+        evidence: [],
+      },
+    ],
+    nextFixes: ["Working tree: Start from a clean Git state."],
+  }));
+
+  assert.equal(report.stack, "node");
+  assert.equal(report.summary.score, 96);
+  assert.equal(report.summary.requiredBlockers, 1);
+  assert.equal(report.summary.warnings, 1);
+  assert.equal(report.checks[0].title, "Working tree");
+  assert.equal(report.checks[0].required, true);
+  assert.equal(report.checks[1].required, false);
+  assert.deepEqual(report.nextFixes, ["Working tree: Start from a clean Git state."]);
+});
+
 test("readinessEventsFromReport marks clean readiness as passed", () => {
   const report = parseRepoReadinessReport(JSON.stringify({
     stack: "node",
@@ -463,6 +509,54 @@ test("readinessEventsFromReport marks clean readiness as passed", () => {
   assert.equal(events[0].status, "passed");
   assert.deepEqual(events[0].commands, ["repo-flightcheck --json"]);
   assert.deepEqual(events[0].files, ["/tmp/readiness.json"]);
+});
+
+test("readinessEventsFromReport records required contract checks as blockers", () => {
+  const report = parseRepoReadinessReport(JSON.stringify({
+    schemaVersion: "repo-flightcheck.agent-contract.v1",
+    stack: "node",
+    ready: false,
+    threshold: 80,
+    score: 96,
+    criticalFailures: 0,
+    requiredBeforeAgent: [
+      {
+        title: "Working tree",
+        status: "warn",
+        severity: "high",
+        message: "Working tree has 1 changed path.",
+        fix: "Start from a clean Git state.",
+        evidence: [" M README.md"],
+      },
+    ],
+    recommendedBeforeAgent: [
+      {
+        title: "License",
+        status: "warn",
+        severity: "medium",
+        message: "No license file found.",
+        evidence: [],
+      },
+    ],
+    nextFixes: [],
+  }));
+
+  const events = readinessEventsFromReport(report, {
+    source: "/tmp/repo-contract.json",
+    command: "repo-flightcheck --contract",
+  });
+
+  assert.equal(events.length, 3);
+  assert.equal(events[0].status, "blocked");
+  assert.ok(events[0].summary.includes("1 required blockers"));
+  assert.deepEqual(events[0].commands, ["repo-flightcheck --contract"]);
+  assert.deepEqual(events[0].files, ["/tmp/repo-contract.json", "README.md"]);
+  assert.equal(events[1].type, "blocker");
+  assert.equal(events[1].status, "blocked");
+  assert.equal(events[1].title, "Readiness warn: Working tree");
+  assert.deepEqual(events[1].files, ["/tmp/repo-contract.json", "README.md"]);
+  assert.equal(events[2].type, "decision");
+  assert.equal(events[2].status, undefined);
 });
 
 test("readinessEventsFromReport records failed checks as blockers", () => {
@@ -553,6 +647,55 @@ test("import-readiness appends summary and attention events", async () => {
     assert.equal(events[0].title, "Repo readiness: 48/100");
     assert.equal(events[0].status, "blocked");
     assert.equal(events[1].type, "blocker");
+    assert.equal(summary.attention.length, 2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("import-readiness accepts repo-flightcheck agent contracts", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ledger-test-"));
+
+  try {
+    const ledgerPath = join(dir, "ledger.jsonl");
+    const readinessPath = join(dir, "readiness-contract.json");
+    await writeFile(readinessPath, JSON.stringify({
+      schemaVersion: "repo-flightcheck.agent-contract.v1",
+      stack: "node",
+      ready: false,
+      threshold: 80,
+      score: 96,
+      criticalFailures: 0,
+      requiredBeforeAgent: [
+        {
+          title: "Working tree",
+          status: "warn",
+          severity: "high",
+          message: "Working tree has changed paths.",
+          fix: "Start from a clean Git state.",
+          evidence: [" M README.md"],
+        },
+      ],
+      recommendedBeforeAgent: [],
+      nextFixes: ["Working tree: Start from a clean Git state."],
+    }), "utf8");
+
+    await runCli([
+      "import-readiness",
+      "--ledger", ledgerPath,
+      "--readiness-report", readinessPath,
+      "--command", "node bin/repo-flightcheck.js . --contract",
+    ]);
+    const events = await readLedger(ledgerPath);
+    const summary = summarize(events);
+
+    assert.equal(events.length, 2);
+    assert.equal(events[0].title, "Repo readiness: 96/100");
+    assert.equal(events[0].status, "blocked");
+    assert.deepEqual(events[0].commands, ["node bin/repo-flightcheck.js . --contract"]);
+    assert.equal(events[1].type, "blocker");
+    assert.equal(events[1].status, "blocked");
+    assert.deepEqual(events[1].files, [readinessPath, "README.md"]);
     assert.equal(summary.attention.length, 2);
   } finally {
     await rm(dir, { recursive: true, force: true });

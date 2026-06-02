@@ -291,6 +291,9 @@ export function parseRepoReadinessReport(content) {
 
   const summary = payload.summary;
   const checks = payload.checks;
+  if (payload.schemaVersion === "repo-flightcheck.agent-contract.v1") {
+    return normalizeReadinessContract(payload);
+  }
   if (!summary || typeof summary !== "object" || !Array.isArray(checks)) {
     throw new Error("Readiness report must include summary and checks.");
   }
@@ -304,6 +307,7 @@ export function parseRepoReadinessReport(content) {
       warnings: numberOrDefault(summary.warnings, 0),
       failed: numberOrDefault(summary.failed, 0),
       criticalFailures: numberOrDefault(summary.criticalFailures, 0),
+      requiredBlockers: numberOrDefault(summary.requiredBlockers, 0),
     },
     checks: checks.map((check) => ({
       title: String(check?.title ?? "Untitled readiness check"),
@@ -314,6 +318,45 @@ export function parseRepoReadinessReport(content) {
       evidence: Array.isArray(check?.evidence) ? check.evidence.map(String) : [],
     })),
     nextFixes: Array.isArray(payload.nextFixes) ? payload.nextFixes.map(String) : [],
+  };
+}
+
+function normalizeReadinessContract(payload) {
+  const required = Array.isArray(payload.requiredBeforeAgent)
+    ? payload.requiredBeforeAgent.map((check) => normalizeReadinessCheck(check, true))
+    : [];
+  const recommended = Array.isArray(payload.recommendedBeforeAgent)
+    ? payload.recommendedBeforeAgent.map((check) => normalizeReadinessCheck(check, false))
+    : [];
+
+  return {
+    stack: String(payload.stack ?? "unknown"),
+    summary: {
+      score: numberOrDefault(payload.score, 0),
+      pointsPossible: 100,
+      passed: payload.ready ? 1 : 0,
+      warnings: recommended.length,
+      failed: required.length,
+      criticalFailures: numberOrDefault(
+        payload.criticalFailures,
+        required.filter((check) => check.severity === "critical").length,
+      ),
+      requiredBlockers: required.length,
+    },
+    checks: [...required, ...recommended],
+    nextFixes: Array.isArray(payload.nextFixes) ? payload.nextFixes.map(String) : [],
+  };
+}
+
+function normalizeReadinessCheck(check, required) {
+  return {
+    title: String(check?.title ?? "Untitled readiness check"),
+    status: String(check?.status ?? "unknown"),
+    severity: String(check?.severity ?? "unknown"),
+    message: String(check?.message ?? "No message."),
+    fix: check?.fix ? String(check.fix) : "",
+    evidence: Array.isArray(check?.evidence) ? check.evidence.map(String) : [],
+    required,
   };
 }
 
@@ -328,7 +371,7 @@ export function readinessEventsFromReport(report, options = {}) {
   const summaryEvent = createEvent({
     type: "command",
     title: `Repo readiness: ${summary.score}/${summary.pointsPossible}`,
-    summary: `Imported repo-flightcheck report from ${source}. ${summary.passed} passed, ${summary.warnings} warnings, ${summary.failed} failed, ${summary.criticalFailures} critical failures.`,
+    summary: `Imported repo-flightcheck report from ${source}. ${summary.passed} passed, ${summary.warnings} warnings, ${summary.failed} failed, ${summary.criticalFailures} critical failures${summary.requiredBlockers ? `, ${summary.requiredBlockers} required blockers` : ""}.`,
     status,
     files: readinessFiles(nonPassing, source),
     commands,
@@ -336,10 +379,10 @@ export function readinessEventsFromReport(report, options = {}) {
   });
 
   const attentionEvents = nonPassing.slice(0, 8).map((check) => createEvent({
-    type: check.status === "fail" || check.severity === "critical" ? "blocker" : "decision",
+    type: readinessCheckBlocks(check) ? "blocker" : "decision",
     title: `Readiness ${check.status}: ${check.title}`,
     summary: `${check.message}${check.fix ? ` Fix: ${check.fix}` : ""}`,
-    status: check.status === "fail" || check.severity === "critical" ? "blocked" : undefined,
+    status: readinessCheckBlocks(check) ? "blocked" : undefined,
     files: readinessFiles([check], source),
     links,
   }));
@@ -461,6 +504,9 @@ function dirnameFor(path) {
 }
 
 function readinessStatus(summary) {
+  if (summary.requiredBlockers > 0) {
+    return "blocked";
+  }
   if (summary.criticalFailures > 0) {
     return "blocked";
   }
@@ -473,12 +519,16 @@ function readinessStatus(summary) {
   return "passed";
 }
 
+function readinessCheckBlocks(check) {
+  return check.required || check.status === "fail" || check.severity === "critical";
+}
+
 function readinessFiles(checks, source) {
   const files = new Set([String(source)]);
 
   for (const check of checks) {
     for (const evidence of check.evidence ?? []) {
-      const candidate = String(evidence).split(":", 1)[0].trim();
+      const candidate = readinessEvidenceFileCandidate(evidence);
       if (looksLikeFile(candidate)) {
         files.add(candidate);
       }
@@ -486,6 +536,12 @@ function readinessFiles(checks, source) {
   }
 
   return Array.from(files);
+}
+
+function readinessEvidenceFileCandidate(evidence) {
+  const raw = String(evidence).split(":", 1)[0].trim();
+  const gitStatus = raw.match(/^[ MADRCU?!]{1,2}\s+(.+)$/);
+  return gitStatus ? gitStatus[1].trim() : raw;
 }
 
 function looksLikeFile(value) {
