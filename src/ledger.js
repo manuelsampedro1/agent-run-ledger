@@ -142,6 +142,7 @@ export function summarize(events) {
   const byStatus = Object.fromEntries(Array.from(STATUSES, (status) => [status, 0]));
   const files = new Set();
   const commands = [];
+  const openCommands = [];
   const attention = [];
 
   for (const event of events) {
@@ -156,11 +157,15 @@ export function summarize(events) {
     }
 
     for (const command of event.commands ?? []) {
-      commands.push({
+      const commandRecord = {
         command,
         status: event.status ?? "done",
         title: event.title,
-      });
+      };
+      commands.push(commandRecord);
+      if (["planned", "running"].includes(commandRecord.status)) {
+        openCommands.push(commandRecord);
+      }
     }
 
     if (["failed", "blocked", "skipped"].includes(event.status) || event.type === "blocker") {
@@ -174,6 +179,7 @@ export function summarize(events) {
     byStatus,
     files: Array.from(files).sort(),
     commands,
+    openCommands,
     attention,
     startedAt: events[0]?.ts ?? null,
     finishedAt: events.at(-1)?.ts ?? null,

@@ -12,7 +12,7 @@ import {
   validateEvent,
   writeLedger,
 } from "../src/ledger.js";
-import { parseArgs, parseVerificationChecklist, runCli } from "../src/cli.js";
+import { doctorNeedsAttention, parseArgs, parseVerificationChecklist, runCli } from "../src/cli.js";
 import { renderReport } from "../src/report.js";
 
 test("createEvent normalizes repeated fields", () => {
@@ -167,6 +167,7 @@ test("parseArgs supports repeatable evidence fields", () => {
   assert.deepEqual(args.file, ["a.js", "b.js"]);
   assert.deepEqual(args.command, ["npm test"]);
   assert.equal(args.json, true);
+  assert.equal(parseArgs(["--ledger", "run.jsonl", "--strict"]).strict, true);
 });
 
 test("doctor command can emit machine-readable JSON", async () => {
@@ -188,9 +189,45 @@ test("doctor command can emit machine-readable JSON", async () => {
     assert.equal(payload.ledger, ledgerPath);
     assert.equal(payload.summary.eventCount, 5);
     assert.equal(payload.summary.commands.length, 1);
+    assert.equal(payload.summary.openCommands.length, 0);
     assert.equal(payload.summary.attention.length, 0);
   } finally {
     console.log = originalLog;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("doctor strict marks open command evidence with a non-zero exit code", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ledger-test-"));
+  const originalLog = console.log;
+  const originalExitCode = process.exitCode;
+  const lines = [];
+
+  try {
+    process.exitCode = undefined;
+    const ledgerPath = join(dir, "ledger.jsonl");
+    await writeLedger(ledgerPath, [
+      createEvent({
+        type: "command",
+        title: "Run planned checks",
+        summary: "Checks were imported but not executed yet.",
+        status: "planned",
+        commands: ["npm test"],
+      }),
+    ]);
+    console.log = (line) => {
+      lines.push(line);
+    };
+
+    await runCli(["doctor", "--ledger", ledgerPath, "--strict"]);
+    const summary = summarize(await readLedger(ledgerPath));
+
+    assert.equal(process.exitCode, 1);
+    assert.equal(doctorNeedsAttention(summary), true);
+    assert.ok(lines.includes("Open commands: 1"));
+  } finally {
+    console.log = originalLog;
+    process.exitCode = originalExitCode;
     await rm(dir, { recursive: true, force: true });
   }
 });

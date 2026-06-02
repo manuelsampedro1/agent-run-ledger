@@ -57,6 +57,7 @@ Expected CLI output:
 Ledger OK: 4 events
 Files: 3
 Commands: 2
+Open commands: 0
 Attention: 1
 Wrote /tmp/agent-run-ledger-report.html
 ```
@@ -80,6 +81,12 @@ python3 /path/to/verify-by-change/verify_by_change.py --repo . --output /tmp/ver
 node bin/agent-run-ledger.js import-checklist \
   --ledger .agent-run/ledger.jsonl \
   --checklist /tmp/verification-checklist.md
+```
+
+Use strict doctor mode when a handoff should fail until planned checks are executed and blockers are resolved:
+
+```bash
+node bin/agent-run-ledger.js doctor --ledger .agent-run/ledger.jsonl --strict
 ```
 
 Record your own run:
@@ -170,6 +177,7 @@ agent-run-ledger note --ledger .agent-run/ledger.jsonl --type decision --title "
 agent-run-ledger import-checklist --ledger .agent-run/ledger.jsonl --checklist /tmp/verification-checklist.md
 agent-run-ledger doctor --ledger .agent-run/ledger.jsonl
 agent-run-ledger doctor --ledger .agent-run/ledger.jsonl --json
+agent-run-ledger doctor --ledger .agent-run/ledger.jsonl --strict
 agent-run-ledger report --ledger .agent-run/ledger.jsonl --out .agent-run/report.html
 agent-run-ledger demo --out .agent-run
 ```

@@ -16,7 +16,7 @@ Usage:
   agent-run-ledger start --ledger <path> --goal <text>
   agent-run-ledger note --ledger <path> --type <type> --title <text> --summary <text>
   agent-run-ledger import-checklist --ledger <path> --checklist <path> [--status planned]
-  agent-run-ledger doctor --ledger <path> [--json]
+  agent-run-ledger doctor --ledger <path> [--json] [--strict]
   agent-run-ledger report --ledger <path> --out <path>
   agent-run-ledger demo --out <dir>
 
@@ -26,6 +26,7 @@ Options:
   --link <url>        Add one related link. Repeatable.
   --status <status>   planned, running, passed, failed, blocked, skipped, done
   --json              Print machine-readable JSON for supported commands.
+  --strict            For doctor, set exit code 1 when evidence is still open or needs attention.
 `;
 
 export async function runCli(argv) {
@@ -87,13 +88,20 @@ export async function runCli(argv) {
         ledger: args.ledger,
         summary,
       }, null, 2));
+      if (args.strict && doctorNeedsAttention(summary)) {
+        process.exitCode = 1;
+      }
       return;
     }
 
     console.log(`Ledger OK: ${summary.eventCount} events`);
     console.log(`Files: ${summary.files.length}`);
     console.log(`Commands: ${summary.commands.length}`);
+    console.log(`Open commands: ${summary.openCommands.length}`);
     console.log(`Attention: ${summary.attention.length}`);
+    if (args.strict && doctorNeedsAttention(summary)) {
+      process.exitCode = 1;
+    }
     return;
   }
 
@@ -185,6 +193,10 @@ export function parseVerificationChecklist(markdown) {
   return entries.filter((entry) => entry.commands.length > 0);
 }
 
+export function doctorNeedsAttention(summary) {
+  return summary.openCommands.length > 0 || summary.attention.length > 0;
+}
+
 export function parseArgs(argv) {
   const args = {};
 
@@ -199,6 +211,11 @@ export function parseArgs(argv) {
 
     if (key === "json") {
       args.json = true;
+      continue;
+    }
+
+    if (key === "strict") {
+      args.strict = true;
       continue;
     }
 
