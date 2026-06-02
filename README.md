@@ -43,6 +43,23 @@ node bin/agent-run-ledger.js demo --out .agent-run
 open .agent-run/report.html
 ```
 
+Check a sample ledger and render a report:
+
+```bash
+node bin/agent-run-ledger.js doctor --ledger examples/sample-ledger.jsonl
+node bin/agent-run-ledger.js report --ledger examples/sample-ledger.jsonl --out /tmp/agent-run-ledger-report.html
+```
+
+Expected CLI output:
+
+```text
+Ledger OK: 4 events
+Files: 3
+Commands: 2
+Attention: 1
+Wrote /tmp/agent-run-ledger-report.html
+```
+
 Record your own run:
 
 ```bash
