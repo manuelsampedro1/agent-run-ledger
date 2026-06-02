@@ -128,6 +128,10 @@ export async function runCli(argv) {
 
     const content = await readFile(args.checklist, "utf8");
     const entries = parseChecklistInput(content);
+    const taskContractEvents = taskContractEventsFromVerificationEnvelope(content, {
+      source: args.checklist,
+      link: args.link,
+    });
     const readinessEvents = readinessEventsFromVerificationEnvelope(content, {
       source: args.checklist,
       link: args.link,
@@ -140,7 +144,7 @@ export async function runCli(argv) {
       files: entry.files,
       commands: entry.commands,
     }));
-    const events = [...readinessEvents, ...verificationEvents];
+    const events = [...taskContractEvents, ...readinessEvents, ...verificationEvents];
 
     for (const event of events) {
       await appendEvent(args.ledger, event);
@@ -308,6 +312,34 @@ export function parseVerificationEnvelopeReadiness(content) {
   }
 
   return normalizeVerificationEnvelopeReadiness(readiness);
+}
+
+export function parseVerificationEnvelopeTaskContract(content) {
+  const payload = parseJsonVerificationEnvelopePayload(content);
+  const contract = payload?.task_contract;
+  if (!contract || typeof contract !== "object" || Array.isArray(contract)) {
+    return null;
+  }
+
+  return {
+    source: optionalString(contract.source),
+    status: optionalString(contract.status) || "unknown",
+    requiredSections: optionalString(contract.required_sections ?? contract.requiredSections),
+    missingSections: stringList(contract.missing_sections ?? contract.missingSections),
+    placeholderMarkers: stringList(contract.placeholder_markers ?? contract.placeholderMarkers),
+  };
+}
+
+export function taskContractEventsFromVerificationEnvelope(content, options = {}) {
+  const contract = parseVerificationEnvelopeTaskContract(content);
+  if (!contract) {
+    return [];
+  }
+
+  return [taskContractEvent(contract, {
+    source: options.source ?? "verification envelope",
+    link: options.link,
+  })];
 }
 
 export function readinessEventsFromVerificationEnvelope(content, options = {}) {
@@ -930,6 +962,24 @@ function optionalNumber(value, fallback) {
     return fallback;
   }
   return numberOrDefault(value, fallback);
+}
+
+function optionalString(value) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  return String(value).trim();
+}
+
+function stringList(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter(Boolean);
+  }
+  if (value === null || value === undefined || value === "") {
+    return [];
+  }
+  const text = String(value).trim();
+  return text.toLowerCase() === "none" ? [] : [text];
 }
 
 function uniqueStrings(values) {

@@ -92,7 +92,7 @@ node bin/agent-run-ledger.js import-checklist \
   --checklist /tmp/verification-envelope.json
 ```
 
-When the JSON envelope came from `verify-by-change --review-packet ... --json-envelope` and includes `repo_readiness`, the import also records that readiness summary as ledger evidence before the planned verification commands.
+When the JSON envelope came from `verify-by-change --review-packet ... --json-envelope` and includes `task_contract` or `repo_readiness`, the import also records that task-contract or readiness summary as ledger evidence before the planned verification commands. Passing task contracts become `done` decisions; incomplete contracts become `blocked` blockers so `doctor --strict` keeps the run open.
 
 Import a repo readiness report before or after an agent run. This records a `repo-flightcheck --json` report or `repo-flightcheck --contract` artifact as ledger evidence and turns required or failed checks into blocker events:
 

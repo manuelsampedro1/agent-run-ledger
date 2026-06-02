@@ -21,6 +21,7 @@ import {
   parseJsonVerificationEnvelope,
   parseRenderedVerificationEnvelope,
   parseVerificationEnvelopeReadiness,
+  parseVerificationEnvelopeTaskContract,
   parseRepoReadinessReport,
   parseReviewPacket,
   parseReviewPacketCiEvidence,
@@ -33,6 +34,7 @@ import {
   readinessEventsFromVerificationEnvelope,
   reviewPacketEvents,
   runCli,
+  taskContractEventsFromVerificationEnvelope,
 } from "../src/cli.js";
 import { renderReport } from "../src/report.js";
 
@@ -508,6 +510,73 @@ test("parseVerificationEnvelopeReadiness extracts embedded repo readiness", () =
   assert.deepEqual(report.checks, []);
 });
 
+test("parseVerificationEnvelopeTaskContract extracts embedded task contract metadata", () => {
+  const contract = parseVerificationEnvelopeTaskContract(JSON.stringify({
+    schema_version: "verify-by-change.v1",
+    source: {
+      type: "review_packet",
+    },
+    changed_files: ["README.md"],
+    empty: false,
+    categories: {
+      docs: {
+        files: ["README.md"],
+        commands: ["Review rendered Markdown."],
+      },
+    },
+    task_contract: {
+      source: "/tmp/AGENT_TASK.md",
+      status: "warn",
+      required_sections: "6/8",
+      missing_sections: ["Risks", "Out of Scope"],
+      placeholder_markers: ["Objective"],
+    },
+  }));
+
+  assert.deepEqual(contract, {
+    source: "/tmp/AGENT_TASK.md",
+    status: "warn",
+    requiredSections: "6/8",
+    missingSections: ["Risks", "Out of Scope"],
+    placeholderMarkers: ["Objective"],
+  });
+});
+
+test("taskContractEventsFromVerificationEnvelope records embedded task contract status", () => {
+  const events = taskContractEventsFromVerificationEnvelope(JSON.stringify({
+    schema_version: "verify-by-change.v1",
+    source: {
+      type: "review_packet",
+    },
+    changed_files: ["README.md"],
+    empty: false,
+    categories: {
+      docs: {
+        files: ["README.md"],
+        commands: ["Review rendered Markdown."],
+      },
+    },
+    task_contract: {
+      source: "/tmp/AGENT_TASK.md",
+      status: "pass",
+      required_sections: "8/8",
+      missing_sections: [],
+      placeholder_markers: [],
+    },
+  }), {
+    source: "/tmp/verification-envelope.json",
+    link: "https://github.com/example/repo/commit/abc",
+  });
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, "decision");
+  assert.equal(events[0].title, "Task contract passed");
+  assert.equal(events[0].status, "done");
+  assert.deepEqual(events[0].files, ["/tmp/verification-envelope.json", "/tmp/AGENT_TASK.md"]);
+  assert.deepEqual(events[0].links, ["https://github.com/example/repo/commit/abc"]);
+  assert.match(events[0].summary, /Required sections: 8\/8/);
+});
+
 test("readinessEventsFromVerificationEnvelope records embedded readiness status", () => {
   const events = readinessEventsFromVerificationEnvelope(JSON.stringify({
     schema_version: "verify-by-change.v1",
@@ -673,6 +742,52 @@ test("import-checklist appends readiness evidence from JSON envelope", async () 
     assert.equal(events[1].title, "Verify docs");
     assert.equal(events[1].status, "planned");
     assert.deepEqual(events[1].commands, ["Review rendered Markdown and verify links if public-facing."]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("import-checklist appends task contract evidence from JSON envelope", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ledger-test-"));
+
+  try {
+    const ledgerPath = join(dir, "ledger.jsonl");
+    const checklistPath = join(dir, "verification-envelope.json");
+    await writeFile(checklistPath, JSON.stringify({
+      schema_version: "verify-by-change.v1",
+      source: {
+        type: "review_packet",
+      },
+      changed_files: ["README.md"],
+      empty: false,
+      categories: {
+        docs: {
+          files: ["README.md"],
+          commands: ["Review rendered Markdown and verify links if public-facing."],
+        },
+      },
+      task_contract: {
+        source: "/tmp/AGENT_TASK.md",
+        status: "warn",
+        required_sections: "7/8",
+        missing_sections: ["Risks"],
+        placeholder_markers: [],
+      },
+    }), "utf8");
+
+    await runCli(["import-checklist", "--ledger", ledgerPath, "--checklist", checklistPath]);
+    const events = await readLedger(ledgerPath);
+    const summary = summarize(events);
+
+    assert.equal(events.length, 2);
+    assert.equal(events[0].type, "blocker");
+    assert.equal(events[0].title, "Task contract needs attention");
+    assert.equal(events[0].status, "blocked");
+    assert.deepEqual(events[0].files, [checklistPath, "/tmp/AGENT_TASK.md"]);
+    assert.match(events[0].summary, /Missing sections: Risks/);
+    assert.equal(events[1].title, "Verify docs");
+    assert.equal(events[1].status, "planned");
+    assert.equal(summary.attention.length, 1);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
