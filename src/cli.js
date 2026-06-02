@@ -16,6 +16,7 @@ Usage:
   agent-run-ledger start --ledger <path> --goal <text>
   agent-run-ledger note --ledger <path> --type <type> --title <text> --summary <text>
   agent-run-ledger import-checklist --ledger <path> --checklist <path> [--status planned]
+  agent-run-ledger import-readiness --ledger <path> --readiness-report <path> [--command <cmd>]
   agent-run-ledger doctor --ledger <path> [--json] [--strict]
   agent-run-ledger report --ledger <path> --out <path>
   agent-run-ledger demo --out <dir>
@@ -128,6 +129,27 @@ export async function runCli(argv) {
     return;
   }
 
+  if (command === "import-readiness") {
+    requireOption(args, "ledger");
+    requireOption(args, "readiness-report");
+
+    const content = await readFile(args["readiness-report"], "utf8");
+    const report = parseRepoReadinessReport(content);
+    const events = readinessEventsFromReport(report, {
+      source: args["readiness-report"],
+      command: args.command,
+      link: args.link,
+      status: args.status,
+    });
+
+    for (const event of events) {
+      await appendEvent(args.ledger, event);
+    }
+
+    console.log(`Imported repo readiness report as ${events.length} event${events.length === 1 ? "" : "s"} into ${args.ledger}`);
+    return;
+  }
+
   if (command === "report") {
     requireOption(args, "ledger");
     requireOption(args, "out");
@@ -223,6 +245,76 @@ export function parseVerificationChecklist(markdown) {
   return entries.filter((entry) => entry.commands.length > 0);
 }
 
+export function parseRepoReadinessReport(content) {
+  let payload;
+  try {
+    payload = JSON.parse(content);
+  } catch (error) {
+    throw new Error(`Invalid readiness JSON: ${error.message}`);
+  }
+
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("Readiness report must be a JSON object.");
+  }
+
+  const summary = payload.summary;
+  const checks = payload.checks;
+  if (!summary || typeof summary !== "object" || !Array.isArray(checks)) {
+    throw new Error("Readiness report must include summary and checks.");
+  }
+
+  return {
+    stack: String(payload.stack ?? "unknown"),
+    summary: {
+      score: numberOrDefault(summary.score, 0),
+      pointsPossible: numberOrDefault(summary.pointsPossible, 100),
+      passed: numberOrDefault(summary.passed, 0),
+      warnings: numberOrDefault(summary.warnings, 0),
+      failed: numberOrDefault(summary.failed, 0),
+      criticalFailures: numberOrDefault(summary.criticalFailures, 0),
+    },
+    checks: checks.map((check) => ({
+      title: String(check?.title ?? "Untitled readiness check"),
+      status: String(check?.status ?? "unknown"),
+      severity: String(check?.severity ?? "unknown"),
+      message: String(check?.message ?? "No message."),
+      fix: check?.fix ? String(check.fix) : "",
+      evidence: Array.isArray(check?.evidence) ? check.evidence.map(String) : [],
+    })),
+    nextFixes: Array.isArray(payload.nextFixes) ? payload.nextFixes.map(String) : [],
+  };
+}
+
+export function readinessEventsFromReport(report, options = {}) {
+  const summary = report.summary;
+  const nonPassing = report.checks.filter((check) => check.status !== "pass");
+  const status = options.status ?? readinessStatus(summary);
+  const source = options.source ?? "readiness report";
+  const commands = options.command ?? [];
+  const links = options.link ?? [];
+
+  const summaryEvent = createEvent({
+    type: "command",
+    title: `Repo readiness: ${summary.score}/${summary.pointsPossible}`,
+    summary: `Imported repo-flightcheck report from ${source}. ${summary.passed} passed, ${summary.warnings} warnings, ${summary.failed} failed, ${summary.criticalFailures} critical failures.`,
+    status,
+    files: readinessFiles(nonPassing, source),
+    commands,
+    links,
+  });
+
+  const attentionEvents = nonPassing.slice(0, 8).map((check) => createEvent({
+    type: check.status === "fail" || check.severity === "critical" ? "blocker" : "decision",
+    title: `Readiness ${check.status}: ${check.title}`,
+    summary: `${check.message}${check.fix ? ` Fix: ${check.fix}` : ""}`,
+    status: check.status === "fail" || check.severity === "critical" ? "blocked" : undefined,
+    files: readinessFiles([check], source),
+    links,
+  }));
+
+  return [summaryEvent, ...attentionEvents];
+}
+
 export function doctorNeedsAttention(summary) {
   return summary.openCommands.length > 0 || summary.attention.length > 0;
 }
@@ -277,4 +369,44 @@ function dirnameFor(path) {
   const normalized = path.replaceAll("\\", "/");
   const index = normalized.lastIndexOf("/");
   return index === -1 ? "." : normalized.slice(0, index);
+}
+
+function readinessStatus(summary) {
+  if (summary.criticalFailures > 0) {
+    return "blocked";
+  }
+  if (summary.failed > 0) {
+    return "failed";
+  }
+  if (summary.warnings > 0) {
+    return "done";
+  }
+  return "passed";
+}
+
+function readinessFiles(checks, source) {
+  const files = new Set([String(source)]);
+
+  for (const check of checks) {
+    for (const evidence of check.evidence ?? []) {
+      const candidate = String(evidence).split(":", 1)[0].trim();
+      if (looksLikeFile(candidate)) {
+        files.add(candidate);
+      }
+    }
+  }
+
+  return Array.from(files);
+}
+
+function looksLikeFile(value) {
+  return Boolean(value)
+    && !value.startsWith("http")
+    && !value.includes(" ")
+    && (value.includes("/") || value.includes("\\") || value.includes("."));
+}
+
+function numberOrDefault(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
 }

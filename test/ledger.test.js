@@ -17,7 +17,9 @@ import {
   parseArgs,
   parseChecklistInput,
   parseJsonVerificationEnvelope,
+  parseRepoReadinessReport,
   parseVerificationChecklist,
+  readinessEventsFromReport,
   runCli,
 } from "../src/cli.js";
 import { renderReport } from "../src/report.js";
@@ -398,6 +400,158 @@ test("import-checklist appends planned command events from JSON envelope", async
     assert.deepEqual(events.map((event) => event.status), ["planned", "planned"]);
     assert.deepEqual(events[0].files, ["verify_by_change.py"]);
     assert.deepEqual(events[1].commands, ["Review rendered Markdown and verify links if public-facing."]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("parseRepoReadinessReport normalizes repo-flightcheck JSON", () => {
+  const report = parseRepoReadinessReport(JSON.stringify({
+    stack: "python",
+    summary: {
+      score: 84,
+      pointsPossible: 100,
+      passed: 10,
+      warnings: 2,
+      failed: 1,
+      criticalFailures: 1,
+    },
+    checks: [
+      {
+        title: "Verification command",
+        status: "fail",
+        severity: "critical",
+        message: "No reliable verification command detected.",
+        fix: "Expose one obvious test command.",
+        evidence: ["README.md: python3 -m unittest discover -s tests"],
+      },
+    ],
+    nextFixes: ["Verification command: expose one obvious test command."],
+  }));
+
+  assert.equal(report.stack, "python");
+  assert.equal(report.summary.score, 84);
+  assert.equal(report.summary.criticalFailures, 1);
+  assert.equal(report.checks[0].title, "Verification command");
+  assert.deepEqual(report.nextFixes, ["Verification command: expose one obvious test command."]);
+});
+
+test("readinessEventsFromReport marks clean readiness as passed", () => {
+  const report = parseRepoReadinessReport(JSON.stringify({
+    stack: "node",
+    summary: {
+      score: 100,
+      pointsPossible: 100,
+      passed: 14,
+      warnings: 0,
+      failed: 0,
+      criticalFailures: 0,
+    },
+    checks: [],
+    nextFixes: [],
+  }));
+
+  const events = readinessEventsFromReport(report, {
+    source: "/tmp/readiness.json",
+    command: "repo-flightcheck --json",
+  });
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, "command");
+  assert.equal(events[0].status, "passed");
+  assert.deepEqual(events[0].commands, ["repo-flightcheck --json"]);
+  assert.deepEqual(events[0].files, ["/tmp/readiness.json"]);
+});
+
+test("readinessEventsFromReport records failed checks as blockers", () => {
+  const report = parseRepoReadinessReport(JSON.stringify({
+    stack: "generic",
+    summary: {
+      score: 48,
+      pointsPossible: 100,
+      passed: 5,
+      warnings: 4,
+      failed: 1,
+      criticalFailures: 1,
+    },
+    checks: [
+      {
+        title: "Verification command",
+        status: "fail",
+        severity: "critical",
+        message: "No reliable verification command detected.",
+        fix: "Expose one obvious test command.",
+        evidence: ["README.md: npm test"],
+      },
+      {
+        title: "CI workflow",
+        status: "warn",
+        severity: "high",
+        message: "No GitHub Actions workflow detected.",
+        evidence: [".github/workflows/ci.yml"],
+      },
+    ],
+    nextFixes: [],
+  }));
+
+  const events = readinessEventsFromReport(report, {
+    source: "/tmp/readiness.json",
+  });
+
+  assert.equal(events.length, 3);
+  assert.equal(events[0].status, "blocked");
+  assert.equal(events[1].type, "blocker");
+  assert.equal(events[1].status, "blocked");
+  assert.equal(events[1].title, "Readiness fail: Verification command");
+  assert.ok(events[1].summary.includes("Expose one obvious test command."));
+  assert.deepEqual(events[1].files, ["/tmp/readiness.json", "README.md"]);
+  assert.equal(events[2].type, "decision");
+  assert.equal(events[2].status, undefined);
+});
+
+test("import-readiness appends summary and attention events", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ledger-test-"));
+
+  try {
+    const ledgerPath = join(dir, "ledger.jsonl");
+    const readinessPath = join(dir, "readiness.json");
+    await writeFile(readinessPath, JSON.stringify({
+      stack: "generic",
+      summary: {
+        score: 48,
+        pointsPossible: 100,
+        passed: 5,
+        warnings: 0,
+        failed: 1,
+        criticalFailures: 1,
+      },
+      checks: [
+        {
+          title: "Verification command",
+          status: "fail",
+          severity: "critical",
+          message: "No reliable verification command detected.",
+          fix: "Expose one obvious test command.",
+          evidence: ["README.md: npm test"],
+        },
+      ],
+      nextFixes: [],
+    }), "utf8");
+
+    await runCli([
+      "import-readiness",
+      "--ledger", ledgerPath,
+      "--readiness-report", readinessPath,
+      "--command", "node bin/repo-flightcheck.js . --json",
+    ]);
+    const events = await readLedger(ledgerPath);
+    const summary = summarize(events);
+
+    assert.equal(events.length, 2);
+    assert.equal(events[0].title, "Repo readiness: 48/100");
+    assert.equal(events[0].status, "blocked");
+    assert.equal(events[1].type, "blocker");
+    assert.equal(summary.attention.length, 2);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

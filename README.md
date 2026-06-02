@@ -88,6 +88,16 @@ node bin/agent-run-ledger.js import-checklist \
   --checklist /tmp/verification-envelope.json
 ```
 
+Import a repo readiness report before or after an agent run. This records a `repo-flightcheck --json` artifact as ledger evidence and turns failed critical checks into blocker events:
+
+```bash
+node /path/to/repo-flightcheck/bin/repo-flightcheck.js . --json > /tmp/repo-readiness.json
+node bin/agent-run-ledger.js import-readiness \
+  --ledger .agent-run/ledger.jsonl \
+  --readiness-report /tmp/repo-readiness.json \
+  --command "node /path/to/repo-flightcheck/bin/repo-flightcheck.js . --json"
+```
+
 Use strict doctor mode when a handoff should fail until planned checks are executed and blockers are resolved:
 
 ```bash
@@ -181,6 +191,7 @@ agent-run-ledger start --ledger .agent-run/ledger.jsonl --goal "..."
 agent-run-ledger note --ledger .agent-run/ledger.jsonl --type decision --title "..." --summary "..."
 agent-run-ledger import-checklist --ledger .agent-run/ledger.jsonl --checklist /tmp/verification-checklist.md
 agent-run-ledger import-checklist --ledger .agent-run/ledger.jsonl --checklist /tmp/verification-envelope.json
+agent-run-ledger import-readiness --ledger .agent-run/ledger.jsonl --readiness-report /tmp/repo-readiness.json
 agent-run-ledger doctor --ledger .agent-run/ledger.jsonl
 agent-run-ledger doctor --ledger .agent-run/ledger.jsonl --json
 agent-run-ledger doctor --ledger .agent-run/ledger.jsonl --strict
