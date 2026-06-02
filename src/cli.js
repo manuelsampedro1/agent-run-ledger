@@ -39,6 +39,7 @@ const REVIEW_PACKET_SECTIONS = new Set([
   "Repo Context",
   "Repo Readiness",
   "CI Evidence",
+  "Published HEAD",
   "Diff",
   "Verification Checklist",
   "Suggested Review Prompt",
@@ -625,6 +626,31 @@ export function parseReviewPacketCiEvidence(section) {
   };
 }
 
+export function parseReviewPacketPublishedHead(section) {
+  if (!section.trim()) {
+    return null;
+  }
+
+  const status = markdownInlineMetric(section, "Status");
+  if (!status) {
+    return null;
+  }
+
+  return {
+    status,
+    message: markdownTextMetric(section, "Message") ?? "No message.",
+    schema: markdownInlineMetric(section, "Schema") ?? "",
+    source: firstInlineCode(section.match(/^Source:\s+(.+?)\s*$/m)?.[1] ?? "") ?? "",
+    remote: markdownInlineMetric(section, "Remote") ?? "",
+    branch: markdownInlineMetric(section, "Branch") ?? "",
+    localHead: markdownInlineMetric(section, "Local HEAD") ?? "",
+    remoteHead: markdownInlineMetric(section, "Remote HEAD") ?? "",
+    commitUrl: markdownUrlMetric(section, "Commit URL") ?? "",
+    ciUrl: markdownUrlMetric(section, "CI URL") ?? "",
+    evidence: publishedHeadEvidence(section),
+  };
+}
+
 export function parseReviewPacketSensitiveChanges(section) {
   const categories = [];
   let current = null;
@@ -661,12 +687,14 @@ export function parseReviewPacket(content) {
   const sensitiveChangeSection = markdownSection(content, "Sensitive Change Check");
   const readinessSection = markdownSection(content, "Repo Readiness");
   const ciEvidenceSection = markdownSection(content, "CI Evidence");
+  const publishedHeadSection = markdownSection(content, "Published HEAD");
   const verificationSection = markdownSection(content, "Verification Checklist");
   const changedFiles = inlineCodeBullets(changedSection);
   const lanes = parseReviewMap(reviewMapSection);
   const sensitiveChanges = parseReviewPacketSensitiveChanges(sensitiveChangeSection);
   const readinessReport = parseReviewPacketReadiness(readinessSection);
   const ciRun = parseReviewPacketCiEvidence(ciEvidenceSection);
+  const publishedHead = parseReviewPacketPublishedHead(publishedHeadSection);
   const verificationEnvelope = parseRenderedVerificationEnvelope(verificationSection);
   const verificationEntries = verificationEnvelope?.entries ?? parseChecklistInput(verificationSection);
 
@@ -678,6 +706,7 @@ export function parseReviewPacket(content) {
     sensitiveChanges,
     readinessReport,
     ciRun,
+    publishedHead,
     verificationEnvelope,
     verificationEntries,
   };
@@ -732,6 +761,13 @@ export function reviewPacketEvents(packet, options = {}) {
     })]
     : [];
 
+  const publishedHeadEvents = packet.publishedHead
+    ? [publishedHeadEvent(packet.publishedHead, {
+      source,
+      link: links,
+    })]
+    : [];
+
   const verificationEvents = (packet.verificationEntries ?? []).map((entry) => createEvent({
     type: "command",
     title: `Verify ${entry.title}`,
@@ -747,7 +783,7 @@ export function reviewPacketEvents(packet, options = {}) {
     links,
   }));
 
-  return [summaryEvent, ...laneEvents, ...sensitiveEvents, ...ciEvidenceEvents, ...readinessEvents, ...verificationEvents];
+  return [summaryEvent, ...laneEvents, ...sensitiveEvents, ...ciEvidenceEvents, ...publishedHeadEvents, ...readinessEvents, ...verificationEvents];
 }
 
 export function doctorNeedsAttention(summary) {
@@ -1018,6 +1054,10 @@ function markdownUrlMetric(markdown, label) {
   return markdown.match(new RegExp(`^- ${escapeRegExp(label)}: <([^>]+)>`, "m"))?.[1] ?? null;
 }
 
+function markdownTextMetric(markdown, label) {
+  return markdown.match(new RegExp(`^- ${escapeRegExp(label)}: (.+?)\\s*$`, "m"))?.[1]?.trim() ?? null;
+}
+
 function markdownBoolMetric(markdown, label) {
   const value = markdownInlineMetric(markdown, label);
   if (value === null) {
@@ -1062,4 +1102,60 @@ function inlineCodeBullets(section) {
 
 function firstInlineCode(value) {
   return value.match(/`(.+?)`/)?.[1] ?? null;
+}
+
+function publishedHeadEvidence(section) {
+  const lines = [];
+  let insideEvidence = false;
+
+  for (const line of section.split(/\r?\n/)) {
+    if (/^Evidence:\s*$/.test(line)) {
+      insideEvidence = true;
+      continue;
+    }
+    if (!insideEvidence) {
+      continue;
+    }
+    if (line.trim() === "") {
+      continue;
+    }
+    const bullet = line.match(/^-\s+`(.+?)`\s*$/);
+    if (!bullet) {
+      break;
+    }
+    lines.push(bullet[1]);
+  }
+
+  return lines;
+}
+
+function publishedHeadEvent(proof, options = {}) {
+  const source = options.source ?? "review packet";
+  const links = uniqueStrings([
+    proof.commitUrl,
+    proof.ciUrl,
+    ...optionValues(options.link),
+  ].filter(Boolean));
+  const files = uniqueStrings([
+    String(source),
+    proof.source,
+  ].filter(Boolean));
+  const detail = [
+    proof.schema ? `schema ${proof.schema}` : null,
+    proof.branch ? `branch ${proof.branch}` : null,
+    proof.localHead ? `local ${proof.localHead}` : null,
+    proof.remoteHead ? `remote ${proof.remoteHead}` : null,
+    proof.evidence.length ? `evidence ${proof.evidence.join(", ")}` : null,
+  ].filter(Boolean).join(", ");
+  const passed = proof.status.toLowerCase() === "pass";
+
+  return createEvent({
+    type: passed ? "command" : "blocker",
+    title: `Published HEAD ${passed ? "passed" : "blocked"}`,
+    summary: `Imported published-HEAD proof from ${source}: ${proof.message}${detail ? ` (${detail})` : ""}.`,
+    status: passed ? "passed" : "blocked",
+    files,
+    commands: passed ? ["Published HEAD proof"] : [],
+    links,
+  });
 }

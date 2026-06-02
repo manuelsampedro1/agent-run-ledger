@@ -11,6 +11,7 @@ Use it when Codex, Claude Code, or another agent changes a repo and you want a c
 - which files changed
 - which commands were run
 - which CI runs backed the closeout
+- whether the reviewed local commit was actually published on the remote branch
 - which sensitive paths still need explicit risk review
 - what passed, failed, or blocked the work
 - what should be reviewed next
@@ -108,7 +109,7 @@ node bin/agent-run-ledger.js import-readiness \
   --command "node /path/to/repo-flightcheck/bin/repo-flightcheck.js . --contract"
 ```
 
-Import a review packet after a Codex or Claude Code handoff. This records the packet, changed files, review lanes, sensitive-change checks, any embedded CI evidence, any embedded repo readiness section, and any embedded verification checklist as ledger evidence:
+Import a review packet after a Codex or Claude Code handoff. This records the packet, changed files, review lanes, sensitive-change checks, any embedded CI evidence, any embedded published-HEAD proof, any embedded repo readiness section, and any embedded verification checklist as ledger evidence:
 
 ```bash
 python3 /path/to/codex-review-packet/codex_review_packet.py \
@@ -122,9 +123,26 @@ node bin/agent-run-ledger.js import-review-packet \
   --command "python3 /path/to/codex-review-packet/codex_review_packet.py --repo . --verify-by-change /path/to/verify-by-change/verify_by_change.py"
 ```
 
+Review packet import can also carry public commit proof from `repo-flightcheck --check-remote --json`:
+
+```bash
+node /path/to/repo-flightcheck/bin/repo-flightcheck.js . --check-remote --json > /tmp/published-head.json
+
+python3 /path/to/codex-review-packet/codex_review_packet.py \
+  --repo . \
+  --published-head /tmp/published-head.json \
+  --output /tmp/review-packet-with-published-head.md
+
+node bin/agent-run-ledger.js import-review-packet \
+  --ledger .agent-run/ledger.jsonl \
+  --packet /tmp/review-packet-with-published-head.md
+```
+
 Embedded sensitive-change checks are imported as `blocked` blocker events, so `doctor --strict` will keep the handoff open until a reviewer explicitly handles secret material, authorization or approval paths, and deploy or release paths.
 
 Embedded CI evidence is imported as command evidence with `passed`, `failed`, `running`, `planned`, `skipped`, or `done` status. Embedded verification checks are imported as `planned` command events, so `doctor --strict` will keep the handoff open until those commands are recorded as passed, skipped, failed, or blocked.
+
+Embedded published-HEAD proof is imported as passed command evidence when the packet says `Status: pass`; any other status is imported as a blocker so public proof cannot be treated as closed while the local commit is not on the remote branch.
 
 When `codex-review-packet` renders a generated `verify-by-change.v1` envelope inside the packet, `agent-run-ledger` keeps the envelope schema and verification source in the imported command summaries instead of treating the checklist as anonymous Markdown.
 

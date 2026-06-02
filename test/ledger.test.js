@@ -24,6 +24,7 @@ import {
   parseRepoReadinessReport,
   parseReviewPacket,
   parseReviewPacketCiEvidence,
+  parseReviewPacketPublishedHead,
   parseReviewPacketReadiness,
   parseReviewPacketSensitiveChanges,
   parseVerificationChecklist,
@@ -1192,6 +1193,38 @@ test("parseReviewPacketCiEvidence treats null conclusions as incomplete evidence
   assert.equal(ciRunEvent(run).status, "running");
 });
 
+test("parseReviewPacketPublishedHead extracts pass evidence", () => {
+  const proof = parseReviewPacketPublishedHead(`Source: \`/tmp/published-head.json\`
+
+- Status: \`pass\`
+- Message: Origin remote is reachable and local HEAD is published on origin/main.
+- Schema: \`repo-flightcheck\`
+- Remote: \`https://github.com/example/repo.git\`
+- Branch: \`main\`
+- Local HEAD: \`abc123\`
+- Remote HEAD: \`abc123\`
+- Commit URL: <https://github.com/example/repo/commit/abc123>
+- CI URL: <https://github.com/example/repo/actions/runs/123>
+
+Evidence:
+- \`origin/main: abc123\`
+`);
+
+  assert.deepEqual(proof, {
+    status: "pass",
+    message: "Origin remote is reachable and local HEAD is published on origin/main.",
+    schema: "repo-flightcheck",
+    source: "/tmp/published-head.json",
+    remote: "https://github.com/example/repo.git",
+    branch: "main",
+    localHead: "abc123",
+    remoteHead: "abc123",
+    commitUrl: "https://github.com/example/repo/commit/abc123",
+    ciUrl: "https://github.com/example/repo/actions/runs/123",
+    evidence: ["origin/main: abc123"],
+  });
+});
+
 test("parseReviewPacket extracts embedded verification checklist from fenced packet section", () => {
   const packet = parseReviewPacket(`# Review Packet
 
@@ -1400,6 +1433,103 @@ Source: \`/tmp/ci-run.json\`
   assert.match(events[2].summary, /sha 25b526a9aa7e252d3da12fc26e10affb40bfc1cd/);
 });
 
+test("reviewPacketEvents imports passing published HEAD proof as command evidence", () => {
+  const packet = parseReviewPacket(`# Review Packet
+
+Repo: \`/tmp/repo\`
+Base: \`origin/main\`
+
+## Changed Files
+
+- \`README.md\`
+
+## Review Map
+
+### Product and docs
+
+Focus: Check docs.
+
+- \`README.md\`
+
+## Published HEAD
+
+Source: \`/tmp/published-head.json\`
+
+- Status: \`pass\`
+- Message: Origin remote is reachable and local HEAD is published on origin/main.
+- Schema: \`repo-flightcheck\`
+- Branch: \`main\`
+- Local HEAD: \`abc123\`
+- Remote HEAD: \`abc123\`
+- Commit URL: <https://github.com/example/repo/commit/abc123>
+
+Evidence:
+- \`origin/main: abc123\`
+`);
+
+  const events = reviewPacketEvents(packet, {
+    source: "/tmp/review-packet.md",
+  });
+  const summary = summarize(events);
+
+  assert.equal(events.length, 3);
+  assert.equal(events[2].type, "command");
+  assert.equal(events[2].title, "Published HEAD passed");
+  assert.equal(events[2].status, "passed");
+  assert.deepEqual(events[2].commands, ["Published HEAD proof"]);
+  assert.deepEqual(events[2].files, ["/tmp/review-packet.md", "/tmp/published-head.json"]);
+  assert.deepEqual(events[2].links, ["https://github.com/example/repo/commit/abc123"]);
+  assert.match(events[2].summary, /schema repo-flightcheck/);
+  assert.match(events[2].summary, /origin\/main: abc123/);
+  assert.equal(summary.attention.length, 0);
+});
+
+test("reviewPacketEvents imports non-passing published HEAD proof as blocker", () => {
+  const packet = parseReviewPacket(`# Review Packet
+
+Repo: \`/tmp/repo\`
+Base: \`origin/main\`
+
+## Changed Files
+
+- \`README.md\`
+
+## Review Map
+
+### Product and docs
+
+Focus: Check docs.
+
+- \`README.md\`
+
+## Published HEAD
+
+Source: \`/tmp/published-head.json\`
+
+- Status: \`warn\`
+- Message: Origin remote is reachable, but local HEAD is not published on origin/main.
+- Schema: \`repo-flightcheck\`
+
+Evidence:
+- \`local HEAD: abc123\`
+- \`origin/main: def456\`
+`);
+
+  const events = reviewPacketEvents(packet, {
+    source: "/tmp/review-packet.md",
+  });
+  const summary = summarize(events);
+
+  assert.equal(events.length, 3);
+  assert.equal(events[2].type, "blocker");
+  assert.equal(events[2].title, "Published HEAD blocked");
+  assert.equal(events[2].status, "blocked");
+  assert.deepEqual(events[2].commands, []);
+  assert.deepEqual(events[2].files, ["/tmp/review-packet.md", "/tmp/published-head.json"]);
+  assert.match(events[2].summary, /local HEAD is not published/);
+  assert.equal(summary.attention.length, 1);
+});
+
 test("reviewPacketEvents imports sensitive change checks as blockers", () => {
   const packet = parseReviewPacket(`# Review Packet
 
@@ -1585,6 +1715,60 @@ Source: \`/tmp/ci-run.json\`
     assert.equal(summary.commands.length, 1);
     assert.equal(summary.commands[0].status, "passed");
     assert.equal(summary.openCommands.length, 0);
+    assert.equal(summary.attention.length, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("import-review-packet appends embedded published HEAD proof", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ledger-test-"));
+
+  try {
+    const ledgerPath = join(dir, "ledger.jsonl");
+    const packetPath = join(dir, "review-packet.md");
+    await writeFile(packetPath, `# Review Packet
+
+Repo: \`/tmp/repo\`
+Base: \`origin/main\`
+
+## Changed Files
+
+- \`README.md\`
+
+## Review Map
+
+### Product and docs
+
+Focus: Check docs.
+
+- \`README.md\`
+
+## Published HEAD
+
+Source: \`/tmp/published-head.json\`
+
+- Status: \`pass\`
+- Message: Origin remote is reachable and local HEAD is published on origin/main.
+- Schema: \`repo-flightcheck\`
+
+Evidence:
+- \`origin/main: abc123\`
+`, "utf8");
+
+    await runCli([
+      "import-review-packet",
+      "--ledger", ledgerPath,
+      "--packet", packetPath,
+    ]);
+    const events = await readLedger(ledgerPath);
+    const summary = summarize(events);
+
+    assert.equal(events.length, 3);
+    assert.equal(events[2].title, "Published HEAD passed");
+    assert.equal(events[2].status, "passed");
+    assert.equal(summary.commands.length, 1);
+    assert.equal(summary.commands[0].command, "Published HEAD proof");
     assert.equal(summary.attention.length, 0);
   } finally {
     await rm(dir, { recursive: true, force: true });
