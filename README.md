@@ -47,6 +47,7 @@ Check a sample ledger and render a report:
 
 ```bash
 node bin/agent-run-ledger.js doctor --ledger examples/sample-ledger.jsonl
+node bin/agent-run-ledger.js doctor --ledger examples/sample-ledger.jsonl --json
 node bin/agent-run-ledger.js report --ledger examples/sample-ledger.jsonl --out /tmp/agent-run-ledger-report.html
 ```
 
@@ -58,6 +59,18 @@ Files: 3
 Commands: 2
 Attention: 1
 Wrote /tmp/agent-run-ledger-report.html
+```
+
+Machine-readable doctor output starts with:
+
+```json
+{
+  "schema_version": "agent-run-ledger.doctor.v1",
+  "ledger": "examples/sample-ledger.jsonl",
+  "summary": {
+    "eventCount": 4
+  }
+}
 ```
 
 Record your own run:
@@ -146,6 +159,7 @@ Optional fields:
 agent-run-ledger start --ledger .agent-run/ledger.jsonl --goal "..."
 agent-run-ledger note --ledger .agent-run/ledger.jsonl --type decision --title "..." --summary "..."
 agent-run-ledger doctor --ledger .agent-run/ledger.jsonl
+agent-run-ledger doctor --ledger .agent-run/ledger.jsonl --json
 agent-run-ledger report --ledger .agent-run/ledger.jsonl --out .agent-run/report.html
 agent-run-ledger demo --out .agent-run
 ```

@@ -15,7 +15,7 @@ const HELP = `agent-run-ledger
 Usage:
   agent-run-ledger start --ledger <path> --goal <text>
   agent-run-ledger note --ledger <path> --type <type> --title <text> --summary <text>
-  agent-run-ledger doctor --ledger <path>
+  agent-run-ledger doctor --ledger <path> [--json]
   agent-run-ledger report --ledger <path> --out <path>
   agent-run-ledger demo --out <dir>
 
@@ -24,6 +24,7 @@ Options:
   --command <cmd>     Add one verification command. Repeatable.
   --link <url>        Add one related link. Repeatable.
   --status <status>   planned, running, passed, failed, blocked, skipped, done
+  --json              Print machine-readable JSON for supported commands.
 `;
 
 export async function runCli(argv) {
@@ -79,6 +80,15 @@ export async function runCli(argv) {
     const events = await readLedger(args.ledger);
     const summary = summarize(events);
 
+    if (args.json) {
+      console.log(JSON.stringify({
+        schema_version: "agent-run-ledger.doctor.v1",
+        ledger: args.ledger,
+        summary,
+      }, null, 2));
+      return;
+    }
+
     console.log(`Ledger OK: ${summary.eventCount} events`);
     console.log(`Files: ${summary.files.length}`);
     console.log(`Commands: ${summary.commands.length}`);
@@ -126,6 +136,12 @@ export function parseArgs(argv) {
     }
 
     const key = token.slice(2);
+
+    if (key === "json") {
+      args.json = true;
+      continue;
+    }
+
     const value = argv[index + 1];
 
     if (!value || value.startsWith("--")) {

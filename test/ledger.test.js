@@ -160,11 +160,39 @@ test("parseArgs supports repeatable evidence fields", () => {
     "--file", "a.js",
     "--file", "b.js",
     "--command", "npm test",
+    "--json",
   ]);
 
   assert.equal(args.ledger, "run.jsonl");
   assert.deepEqual(args.file, ["a.js", "b.js"]);
   assert.deepEqual(args.command, ["npm test"]);
+  assert.equal(args.json, true);
+});
+
+test("doctor command can emit machine-readable JSON", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ledger-test-"));
+  const originalLog = console.log;
+  const lines = [];
+
+  try {
+    const ledgerPath = join(dir, "ledger.jsonl");
+    await writeLedger(ledgerPath, demoEvents());
+    console.log = (line) => {
+      lines.push(line);
+    };
+
+    await runCli(["doctor", "--ledger", ledgerPath, "--json"]);
+
+    const payload = JSON.parse(lines.join("\n"));
+    assert.equal(payload.schema_version, "agent-run-ledger.doctor.v1");
+    assert.equal(payload.ledger, ledgerPath);
+    assert.equal(payload.summary.eventCount, 5);
+    assert.equal(payload.summary.commands.length, 1);
+    assert.equal(payload.summary.attention.length, 0);
+  } finally {
+    console.log = originalLog;
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("demo command writes a ledger and report", async () => {
