@@ -98,7 +98,7 @@ node bin/agent-run-ledger.js import-readiness \
   --command "node /path/to/repo-flightcheck/bin/repo-flightcheck.js . --json"
 ```
 
-Import a review packet after a Codex or Claude Code handoff. This records the packet, changed files, and review lanes as ledger evidence:
+Import a review packet after a Codex or Claude Code handoff. This records the packet, changed files, review lanes, and any embedded verification checklist as ledger evidence:
 
 ```bash
 python3 /path/to/codex-review-packet/codex_review_packet.py \
@@ -111,6 +111,8 @@ node bin/agent-run-ledger.js import-review-packet \
   --packet /tmp/review-packet.md \
   --command "python3 /path/to/codex-review-packet/codex_review_packet.py --repo . --verify-by-change /path/to/verify-by-change/verify_by_change.py"
 ```
+
+Embedded verification checks are imported as `planned` command events, so `doctor --strict` will keep the handoff open until those commands are recorded as passed, skipped, failed, or blocked.
 
 Use strict doctor mode when a handoff should fail until planned checks are executed and blockers are resolved:
 

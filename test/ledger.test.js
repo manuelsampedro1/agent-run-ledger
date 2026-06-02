@@ -606,6 +606,74 @@ Focus: Check correctness and regressions.
       files: ["src/app.js"],
     },
   ]);
+  assert.deepEqual(packet.verificationEntries, []);
+});
+
+test("parseReviewPacket extracts embedded verification checklist from fenced packet section", () => {
+  const packet = parseReviewPacket(`# Review Packet
+
+Repo: \`/tmp/repo\`
+Base: \`working tree\`
+
+## Repo Context
+
+### README.md
+
+\`\`\`md
+# Example
+
+## Verification Checklist
+
+This heading is repo context, not the packet verification section.
+\`\`\`
+
+## Changed Files
+
+- \`README.md\`
+
+## Review Map
+
+### Product and docs
+
+Focus: Check docs.
+
+- \`README.md\`
+
+## Verification Checklist
+
+Source: \`/tmp/verification-envelope.json\`
+Envelope: \`verify-by-change.v1\`
+Verification source: \`explicit_paths\`
+
+\`\`\`md
+# Verification Checklist
+
+Changed files:
+
+- \`README.md\`
+
+## Docs
+
+- \`README.md\`
+
+- Review rendered Markdown and verify links if public-facing.
+\`\`\`
+
+## Suggested Review Prompt
+
+\`\`\`text
+Review this change.
+\`\`\`
+`);
+
+  assert.deepEqual(packet.changedFiles, ["README.md"]);
+  assert.deepEqual(packet.verificationEntries, [
+    {
+      title: "Docs",
+      files: ["README.md"],
+      commands: ["Review rendered Markdown and verify links if public-facing."],
+    },
+  ]);
 });
 
 test("reviewPacketEvents turns review packet lanes into ledger evidence", () => {
@@ -625,6 +693,16 @@ Base: \`origin/main\`
 Focus: Check docs.
 
 - \`README.md\`
+
+## Verification Checklist
+
+\`\`\`md
+## Docs
+
+- \`README.md\`
+
+- Review rendered Markdown.
+\`\`\`
 `);
 
   const events = reviewPacketEvents(packet, {
@@ -633,7 +711,7 @@ Focus: Check docs.
     link: "https://github.com/example/repo/commit/abc",
   });
 
-  assert.equal(events.length, 2);
+  assert.equal(events.length, 3);
   assert.equal(events[0].type, "decision");
   assert.equal(events[0].status, "done");
   assert.equal(events[0].title, "Review packet: 1 changed file");
@@ -642,9 +720,13 @@ Focus: Check docs.
   assert.deepEqual(events[0].links, ["https://github.com/example/repo/commit/abc"]);
   assert.equal(events[1].title, "Review lane: Product and docs");
   assert.equal(events[1].summary, "Check docs.");
+  assert.equal(events[2].type, "command");
+  assert.equal(events[2].status, "planned");
+  assert.equal(events[2].title, "Verify Docs");
+  assert.deepEqual(events[2].commands, ["Review rendered Markdown."]);
 });
 
-test("import-review-packet appends packet summary and review lane events", async () => {
+test("import-review-packet appends packet summary, review lane, and planned verification events", async () => {
   const dir = await mkdtemp(join(tmpdir(), "ledger-test-"));
 
   try {
@@ -673,6 +755,22 @@ Focus: Check docs.
 Focus: Check app behavior.
 
 - \`src/app.js\`
+
+## Verification Checklist
+
+\`\`\`md
+## Docs
+
+- \`README.md\`
+
+- Review rendered Markdown.
+
+## Web
+
+- \`src/app.js\`
+
+- Run the closest frontend test/build command.
+\`\`\`
 `, "utf8");
 
     await runCli([
@@ -684,12 +782,14 @@ Focus: Check app behavior.
     const events = await readLedger(ledgerPath);
     const summary = summarize(events);
 
-    assert.equal(events.length, 3);
+    assert.equal(events.length, 5);
     assert.equal(events[0].title, "Review packet: 2 changed files");
-    assert.deepEqual(events.map((event) => event.type), ["decision", "decision", "decision"]);
+    assert.deepEqual(events.map((event) => event.type), ["decision", "decision", "decision", "command", "command"]);
+    assert.deepEqual(events.slice(3).map((event) => event.status), ["planned", "planned"]);
     assert.ok(summary.files.includes(packetPath));
     assert.ok(summary.files.includes("src/app.js"));
     assert.equal(summary.commands[0].command, "python3 codex_review_packet.py --repo .");
+    assert.equal(summary.openCommands.length, 2);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

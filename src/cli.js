@@ -31,6 +31,16 @@ Options:
   --strict            For doctor, set exit code 1 when evidence is still open or needs attention.
 `;
 
+const REVIEW_PACKET_SECTIONS = new Set([
+  "Changed Files",
+  "Review Map",
+  "Repo Context",
+  "Repo Readiness",
+  "Diff",
+  "Verification Checklist",
+  "Suggested Review Prompt",
+]);
+
 export async function runCli(argv) {
   const [command, ...rest] = argv;
   const args = parseArgs(rest);
@@ -342,14 +352,17 @@ export function parseReviewPacket(content) {
   const base = firstInlineCode(content.match(/^Base:\s+(.+?)\s*$/m)?.[1] ?? "") ?? "";
   const changedSection = markdownSection(content, "Changed Files");
   const reviewMapSection = markdownSection(content, "Review Map");
+  const verificationSection = markdownSection(content, "Verification Checklist");
   const changedFiles = inlineCodeBullets(changedSection);
   const lanes = parseReviewMap(reviewMapSection);
+  const verificationEntries = parseChecklistInput(verificationSection);
 
   return {
     repo,
     base,
     changedFiles,
     lanes,
+    verificationEntries,
   };
 }
 
@@ -378,7 +391,17 @@ export function reviewPacketEvents(packet, options = {}) {
     links,
   }));
 
-  return [summaryEvent, ...laneEvents];
+  const verificationEvents = (packet.verificationEntries ?? []).map((entry) => createEvent({
+    type: "command",
+    title: `Verify ${entry.title}`,
+    summary: `Imported embedded verification checklist section from ${source}.`,
+    status: "planned",
+    files: entry.files,
+    commands: entry.commands,
+    links,
+  }));
+
+  return [summaryEvent, ...laneEvents, ...verificationEvents];
 }
 
 export function doctorNeedsAttention(summary) {
@@ -479,25 +502,24 @@ function numberOrDefault(value, fallback) {
 
 function markdownSection(markdown, title) {
   const lines = markdown.split(/\r?\n/);
-  const selected = [];
-  let inside = false;
+  const headings = [];
 
-  for (const line of lines) {
+  lines.forEach((line, index) => {
     const heading = line.match(/^##\s+(.+?)\s*$/);
-    if (heading) {
-      if (inside) {
-        break;
-      }
-      inside = heading[1].trim() === title;
-      continue;
+    const packetSection = heading?.[1]?.trim();
+    if (packetSection && REVIEW_PACKET_SECTIONS.has(packetSection)) {
+      headings.push({ title: packetSection, index });
     }
+  });
 
-    if (inside) {
-      selected.push(line);
-    }
+  const candidates = headings.filter((heading) => heading.title === title);
+  if (candidates.length === 0) {
+    return "";
   }
 
-  return selected.join("\n");
+  const selected = title === "Verification Checklist" ? candidates.at(-1) : candidates[0];
+  const end = headings.find((heading) => heading.index > selected.index)?.index ?? lines.length;
+  return lines.slice(selected.index + 1, end).join("\n");
 }
 
 function parseReviewMap(section) {
