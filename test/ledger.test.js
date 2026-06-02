@@ -12,7 +12,14 @@ import {
   validateEvent,
   writeLedger,
 } from "../src/ledger.js";
-import { doctorNeedsAttention, parseArgs, parseVerificationChecklist, runCli } from "../src/cli.js";
+import {
+  doctorNeedsAttention,
+  parseArgs,
+  parseChecklistInput,
+  parseJsonVerificationEnvelope,
+  parseVerificationChecklist,
+  runCli,
+} from "../src/cli.js";
 import { renderReport } from "../src/report.js";
 
 test("createEvent normalizes repeated fields", () => {
@@ -266,6 +273,64 @@ test("parseVerificationChecklist extracts files and commands by section", () => 
   ]);
 });
 
+test("parseJsonVerificationEnvelope extracts verify-by-change categories", () => {
+  const entries = parseJsonVerificationEnvelope(JSON.stringify({
+    schema_version: "verify-by-change.v1",
+    source: {
+      type: "explicit_paths",
+    },
+    changed_files: ["verify_by_change.py", "README.md"],
+    empty: false,
+    categories: {
+      python: {
+        files: ["verify_by_change.py"],
+        commands: [
+          "Run `python3 -m py_compile` on changed Python files.",
+          "Run the closest targeted script or tests.",
+        ],
+      },
+      docs: {
+        files: ["README.md"],
+        commands: ["Review rendered Markdown and verify links if public-facing."],
+      },
+    },
+  }));
+
+  assert.deepEqual(entries, [
+    {
+      title: "python",
+      files: ["verify_by_change.py"],
+      commands: [
+        "Run `python3 -m py_compile` on changed Python files.",
+        "Run the closest targeted script or tests.",
+      ],
+    },
+    {
+      title: "docs",
+      files: ["README.md"],
+      commands: ["Review rendered Markdown and verify links if public-facing."],
+    },
+  ]);
+});
+
+test("parseChecklistInput falls back to markdown when JSON envelope is absent", () => {
+  const entries = parseChecklistInput(`# Verification Checklist
+
+## Docs
+
+- \`README.md\`
+- Review rendered Markdown.
+`);
+
+  assert.deepEqual(entries, [
+    {
+      title: "Docs",
+      files: ["README.md"],
+      commands: ["Review rendered Markdown."],
+    },
+  ]);
+});
+
 test("import-checklist appends planned command events", async () => {
   const dir = await mkdtemp(join(tmpdir(), "ledger-test-"));
 
@@ -295,6 +360,44 @@ test("import-checklist appends planned command events", async () => {
     assert.deepEqual(events.map((event) => event.status), ["planned", "planned"]);
     assert.deepEqual(events[0].files, ["verify_by_change.py"]);
     assert.deepEqual(events[0].commands, ["Run `python3 -m py_compile` on changed Python files."]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("import-checklist appends planned command events from JSON envelope", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ledger-test-"));
+
+  try {
+    const ledgerPath = join(dir, "ledger.jsonl");
+    const checklistPath = join(dir, "checklist.json");
+    await writeFile(checklistPath, JSON.stringify({
+      schema_version: "verify-by-change.v1",
+      source: {
+        type: "explicit_paths",
+      },
+      changed_files: ["verify_by_change.py", "README.md"],
+      empty: false,
+      categories: {
+        python: {
+          files: ["verify_by_change.py"],
+          commands: ["Run `python3 -m py_compile` on changed Python files."],
+        },
+        docs: {
+          files: ["README.md"],
+          commands: ["Review rendered Markdown and verify links if public-facing."],
+        },
+      },
+    }), "utf8");
+
+    await runCli(["import-checklist", "--ledger", ledgerPath, "--checklist", checklistPath]);
+    const events = await readLedger(ledgerPath);
+
+    assert.equal(events.length, 2);
+    assert.deepEqual(events.map((event) => event.title), ["Verify python", "Verify docs"]);
+    assert.deepEqual(events.map((event) => event.status), ["planned", "planned"]);
+    assert.deepEqual(events[0].files, ["verify_by_change.py"]);
+    assert.deepEqual(events[1].commands, ["Review rendered Markdown and verify links if public-facing."]);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

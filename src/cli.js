@@ -109,8 +109,9 @@ export async function runCli(argv) {
     requireOption(args, "ledger");
     requireOption(args, "checklist");
 
-    const markdown = await readFile(args.checklist, "utf8");
-    const events = parseVerificationChecklist(markdown).map((entry) => createEvent({
+    const content = await readFile(args.checklist, "utf8");
+    const entries = parseChecklistInput(content);
+    const events = entries.map((entry) => createEvent({
       type: "command",
       title: `Verify ${entry.title}`,
       summary: `Imported verification checklist section from ${args.checklist}.`,
@@ -154,6 +155,35 @@ export async function runCli(argv) {
   }
 
   throw new Error(`Unknown command: ${command}\n\n${HELP}`);
+}
+
+export function parseChecklistInput(content) {
+  const parsed = parseJsonVerificationEnvelope(content);
+  if (parsed) {
+    return parsed;
+  }
+  return parseVerificationChecklist(content);
+}
+
+export function parseJsonVerificationEnvelope(content) {
+  let payload;
+  try {
+    payload = JSON.parse(content);
+  } catch {
+    return null;
+  }
+
+  if (payload?.schema_version !== "verify-by-change.v1" || !payload.categories || typeof payload.categories !== "object") {
+    return null;
+  }
+
+  return Object.entries(payload.categories)
+    .map(([title, category]) => ({
+      title: String(title),
+      files: Array.isArray(category?.files) ? category.files.map(String) : [],
+      commands: Array.isArray(category?.commands) ? category.commands.map(String) : [],
+    }))
+    .filter((entry) => entry.commands.length > 0);
 }
 
 export function parseVerificationChecklist(markdown) {

@@ -74,13 +74,18 @@ Machine-readable doctor output starts with:
 }
 ```
 
-Import a verification checklist as planned command evidence:
+Import a verification checklist as planned command evidence. Markdown checklists and `verify-by-change --json-envelope` artifacts are both supported:
 
 ```bash
 python3 /path/to/verify-by-change/verify_by_change.py --repo . --output /tmp/verification-checklist.md
 node bin/agent-run-ledger.js import-checklist \
   --ledger .agent-run/ledger.jsonl \
   --checklist /tmp/verification-checklist.md
+
+python3 /path/to/verify-by-change/verify_by_change.py --repo . --json-envelope --output /tmp/verification-envelope.json
+node bin/agent-run-ledger.js import-checklist \
+  --ledger .agent-run/ledger.jsonl \
+  --checklist /tmp/verification-envelope.json
 ```
 
 Use strict doctor mode when a handoff should fail until planned checks are executed and blockers are resolved:
@@ -175,6 +180,7 @@ Optional fields:
 agent-run-ledger start --ledger .agent-run/ledger.jsonl --goal "..."
 agent-run-ledger note --ledger .agent-run/ledger.jsonl --type decision --title "..." --summary "..."
 agent-run-ledger import-checklist --ledger .agent-run/ledger.jsonl --checklist /tmp/verification-checklist.md
+agent-run-ledger import-checklist --ledger .agent-run/ledger.jsonl --checklist /tmp/verification-envelope.json
 agent-run-ledger doctor --ledger .agent-run/ledger.jsonl
 agent-run-ledger doctor --ledger .agent-run/ledger.jsonl --json
 agent-run-ledger doctor --ledger .agent-run/ledger.jsonl --strict
