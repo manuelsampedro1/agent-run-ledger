@@ -20,6 +20,7 @@ import {
   parseVerificationEnvelopeReadiness,
   parseRepoReadinessReport,
   parseReviewPacket,
+  parseReviewPacketReadiness,
   parseVerificationChecklist,
   readinessEventsFromReport,
   readinessEventsFromVerificationEnvelope,
@@ -725,6 +726,59 @@ test("readinessEventsFromReport records failed checks as blockers", () => {
   assert.equal(events[2].status, undefined);
 });
 
+test("parseReviewPacketReadiness extracts contract summaries from packets", () => {
+  const report = parseReviewPacketReadiness(`Source: \`/tmp/repo-readiness-contract.json\`
+
+- Contract: \`repo-flightcheck.agent-contract.v1\`
+- Ready: \`false\`
+- Score: \`96/100\`
+- Threshold: \`80\`
+- Stack: \`node\`
+- Summary: \`1\` required blockers, \`1\` recommendations, \`0\` critical failures.
+
+Required before agent:
+
+- \`WARN\` Working tree: Working tree has 1 changed path.
+
+Recommended before agent:
+
+- \`WARN\` License: No license file found.
+
+Next fixes:
+
+- Working tree: Start from a clean Git state.
+`);
+
+  assert.equal(report.stack, "node");
+  assert.equal(report.summary.score, 96);
+  assert.equal(report.summary.pointsPossible, 100);
+  assert.equal(report.summary.requiredBlockers, 1);
+  assert.equal(report.summary.warnings, 1);
+  assert.equal(report.summary.failed, 1);
+  assert.equal(report.summary.criticalFailures, 0);
+  assert.deepEqual(report.checks, [
+    {
+      title: "Working tree",
+      status: "warn",
+      severity: "unknown",
+      message: "Working tree has 1 changed path.",
+      fix: "",
+      evidence: [],
+      required: true,
+    },
+    {
+      title: "License",
+      status: "warn",
+      severity: "unknown",
+      message: "No license file found.",
+      fix: "",
+      evidence: [],
+      required: false,
+    },
+  ]);
+  assert.deepEqual(report.nextFixes, ["Working tree: Start from a clean Git state."]);
+});
+
 test("import-readiness appends summary and attention events", async () => {
   const dir = await mkdtemp(join(tmpdir(), "ledger-test-"));
 
@@ -957,6 +1011,21 @@ Focus: Check docs.
 
 - \`README.md\`
 
+## Repo Readiness
+
+Source: \`/tmp/repo-readiness-contract.json\`
+
+- Contract: \`repo-flightcheck.agent-contract.v1\`
+- Ready: \`false\`
+- Score: \`96/100\`
+- Threshold: \`80\`
+- Stack: \`node\`
+- Summary: \`1\` required blockers, \`0\` recommendations, \`0\` critical failures.
+
+Required before agent:
+
+- \`WARN\` Working tree: Working tree has 1 changed path.
+
 ## Verification Checklist
 
 \`\`\`md
@@ -974,7 +1043,7 @@ Focus: Check docs.
     link: "https://github.com/example/repo/commit/abc",
   });
 
-  assert.equal(events.length, 3);
+  assert.equal(events.length, 5);
   assert.equal(events[0].type, "decision");
   assert.equal(events[0].status, "done");
   assert.equal(events[0].title, "Review packet: 1 changed file");
@@ -983,10 +1052,15 @@ Focus: Check docs.
   assert.deepEqual(events[0].links, ["https://github.com/example/repo/commit/abc"]);
   assert.equal(events[1].title, "Review lane: Product and docs");
   assert.equal(events[1].summary, "Check docs.");
-  assert.equal(events[2].type, "command");
-  assert.equal(events[2].status, "planned");
-  assert.equal(events[2].title, "Verify Docs");
-  assert.deepEqual(events[2].commands, ["Review rendered Markdown."]);
+  assert.equal(events[2].title, "Repo readiness: 96/100");
+  assert.equal(events[2].status, "blocked");
+  assert.equal(events[3].type, "blocker");
+  assert.equal(events[3].status, "blocked");
+  assert.equal(events[3].title, "Readiness warn: Working tree");
+  assert.equal(events[4].type, "command");
+  assert.equal(events[4].status, "planned");
+  assert.equal(events[4].title, "Verify Docs");
+  assert.deepEqual(events[4].commands, ["Review rendered Markdown."]);
 });
 
 test("import-review-packet appends packet summary, review lane, and planned verification events", async () => {
@@ -1019,6 +1093,19 @@ Focus: Check app behavior.
 
 - \`src/app.js\`
 
+## Repo Readiness
+
+Source: \`/tmp/repo-readiness-contract.json\`
+
+- Contract: \`repo-flightcheck.agent-contract.v1\`
+- Ready: \`true\`
+- Score: \`100/100\`
+- Threshold: \`80\`
+- Stack: \`node\`
+- Summary: \`0\` required blockers, \`0\` recommendations, \`0\` critical failures.
+
+No required blockers or recommendations.
+
 ## Verification Checklist
 
 \`\`\`md
@@ -1045,10 +1132,12 @@ Focus: Check app behavior.
     const events = await readLedger(ledgerPath);
     const summary = summarize(events);
 
-    assert.equal(events.length, 5);
+    assert.equal(events.length, 6);
     assert.equal(events[0].title, "Review packet: 2 changed files");
-    assert.deepEqual(events.map((event) => event.type), ["decision", "decision", "decision", "command", "command"]);
-    assert.deepEqual(events.slice(3).map((event) => event.status), ["planned", "planned"]);
+    assert.deepEqual(events.map((event) => event.type), ["decision", "decision", "decision", "command", "command", "command"]);
+    assert.equal(events[3].title, "Repo readiness: 100/100");
+    assert.equal(events[3].status, "passed");
+    assert.deepEqual(events.slice(4).map((event) => event.status), ["planned", "planned"]);
     assert.ok(summary.files.includes(packetPath));
     assert.ok(summary.files.includes("src/app.js"));
     assert.equal(summary.commands[0].command, "python3 codex_review_packet.py --repo .");

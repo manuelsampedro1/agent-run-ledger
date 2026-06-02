@@ -446,14 +446,48 @@ export function readinessEventsFromReport(report, options = {}) {
   return [summaryEvent, ...attentionEvents];
 }
 
+export function parseReviewPacketReadiness(section) {
+  if (!section.trim()) {
+    return null;
+  }
+
+  const contract = markdownInlineMetric(section, "Contract");
+  const ready = markdownBoolMetric(section, "Ready");
+  const [score, pointsPossible] = markdownScoreMetric(markdownInlineMetric(section, "Score"));
+  const summaryText = markdownSummaryLine(section);
+  const requiredBlockers = markdownLabeledCount(summaryText, "required blockers");
+  const recommendations = markdownLabeledCount(summaryText, "recommendations");
+  const passed = markdownLabeledCount(summaryText, "passed");
+  const warnings = markdownLabeledCount(summaryText, "warnings");
+  const failed = markdownLabeledCount(summaryText, "failed");
+  const criticalFailures = markdownLabeledCount(summaryText, "critical failures");
+
+  return {
+    stack: markdownInlineMetric(section, "Stack") ?? "unknown",
+    summary: {
+      score: optionalNumber(score, 0),
+      pointsPossible: optionalNumber(pointsPossible, 100),
+      passed: optionalNumber(passed, ready === true ? 1 : 0),
+      warnings: optionalNumber(warnings, optionalNumber(recommendations, 0)),
+      failed: optionalNumber(failed, optionalNumber(requiredBlockers, 0)),
+      criticalFailures: optionalNumber(criticalFailures, 0),
+      requiredBlockers: optionalNumber(requiredBlockers, 0),
+    },
+    checks: parseReviewPacketReadinessChecks(section, Boolean(contract)),
+    nextFixes: parseReviewPacketNextFixes(section),
+  };
+}
+
 export function parseReviewPacket(content) {
   const repo = firstInlineCode(content.match(/^Repo:\s+(.+?)\s*$/m)?.[1] ?? "") ?? "";
   const base = firstInlineCode(content.match(/^Base:\s+(.+?)\s*$/m)?.[1] ?? "") ?? "";
   const changedSection = markdownSection(content, "Changed Files");
   const reviewMapSection = markdownSection(content, "Review Map");
+  const readinessSection = markdownSection(content, "Repo Readiness");
   const verificationSection = markdownSection(content, "Verification Checklist");
   const changedFiles = inlineCodeBullets(changedSection);
   const lanes = parseReviewMap(reviewMapSection);
+  const readinessReport = parseReviewPacketReadiness(readinessSection);
   const verificationEntries = parseChecklistInput(verificationSection);
 
   return {
@@ -461,6 +495,7 @@ export function parseReviewPacket(content) {
     base,
     changedFiles,
     lanes,
+    readinessReport,
     verificationEntries,
   };
 }
@@ -490,6 +525,13 @@ export function reviewPacketEvents(packet, options = {}) {
     links,
   }));
 
+  const readinessEvents = packet.readinessReport
+    ? readinessEventsFromReport(packet.readinessReport, {
+      source,
+      link: links,
+    })
+    : [];
+
   const verificationEvents = (packet.verificationEntries ?? []).map((entry) => createEvent({
     type: "command",
     title: `Verify ${entry.title}`,
@@ -500,7 +542,7 @@ export function reviewPacketEvents(packet, options = {}) {
     links,
   }));
 
-  return [summaryEvent, ...laneEvents, ...verificationEvents];
+  return [summaryEvent, ...laneEvents, ...readinessEvents, ...verificationEvents];
 }
 
 export function doctorNeedsAttention(summary) {
@@ -674,6 +716,105 @@ function parseReviewMap(section) {
   }
 
   return lanes.filter((lane) => lane.files.length > 0);
+}
+
+function parseReviewPacketReadinessChecks(section, contract) {
+  const checks = [];
+  let currentRequired = false;
+
+  for (const line of section.split(/\r?\n/)) {
+    if (/^Required before agent:\s*$/.test(line)) {
+      currentRequired = true;
+      continue;
+    }
+    if (/^(Recommended before agent:|Attention checks:)\s*$/.test(line)) {
+      currentRequired = false;
+      continue;
+    }
+
+    const match = line.match(/^-\s+`([A-Z.]+)`\s+(.+?):\s+(.+?)\s*$/);
+    if (!match) {
+      continue;
+    }
+
+    checks.push({
+      title: match[2].trim(),
+      status: match[1].toLowerCase(),
+      severity: "unknown",
+      message: match[3].trim(),
+      fix: "",
+      evidence: [],
+      required: contract ? currentRequired : false,
+    });
+  }
+
+  return checks;
+}
+
+function parseReviewPacketNextFixes(section) {
+  const fixes = [];
+  let inside = false;
+  let sawFix = false;
+
+  for (const line of section.split(/\r?\n/)) {
+    if (/^Next fixes:\s*$/.test(line)) {
+      inside = true;
+      continue;
+    }
+    if (inside && line.trim() === "" && sawFix) {
+      break;
+    }
+    if (!inside) {
+      continue;
+    }
+
+    const bullet = line.match(/^-\s+(.+?)\s*$/);
+    if (bullet && !bullet[1].startsWith("`...`")) {
+      fixes.push(bullet[1].trim());
+      sawFix = true;
+    }
+  }
+
+  return fixes;
+}
+
+function markdownInlineMetric(markdown, label) {
+  return markdown.match(new RegExp(`^- ${escapeRegExp(label)}: \`([^\`]+)\``, "m"))?.[1] ?? null;
+}
+
+function markdownBoolMetric(markdown, label) {
+  const value = markdownInlineMetric(markdown, label);
+  if (value === null) {
+    return null;
+  }
+  if (value.toLowerCase() === "true") {
+    return true;
+  }
+  if (value.toLowerCase() === "false") {
+    return false;
+  }
+  return null;
+}
+
+function markdownScoreMetric(value) {
+  if (!value) {
+    return [null, null];
+  }
+  const [score, pointsPossible] = value.split("/", 2);
+  return [score, pointsPossible ?? null];
+}
+
+function markdownSummaryLine(markdown) {
+  return markdown.match(/^- Summary: (.+?)\s*$/m)?.[1] ?? "";
+}
+
+function markdownLabeledCount(summary, label) {
+  const match = summary.match(new RegExp(`\`?(\\d+)\`?\\s+${escapeRegExp(label)}`));
+  return match ? Number(match[1]) : null;
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function inlineCodeBullets(section) {

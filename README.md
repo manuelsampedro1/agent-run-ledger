@@ -106,7 +106,7 @@ node bin/agent-run-ledger.js import-readiness \
   --command "node /path/to/repo-flightcheck/bin/repo-flightcheck.js . --contract"
 ```
 
-Import a review packet after a Codex or Claude Code handoff. This records the packet, changed files, review lanes, and any embedded verification checklist as ledger evidence:
+Import a review packet after a Codex or Claude Code handoff. This records the packet, changed files, review lanes, any embedded repo readiness section, and any embedded verification checklist as ledger evidence:
 
 ```bash
 python3 /path/to/codex-review-packet/codex_review_packet.py \
