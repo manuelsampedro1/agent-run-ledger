@@ -27,6 +27,7 @@ import {
   parseReviewPacketPublishedHead,
   parseReviewPacketReadiness,
   parseReviewPacketSensitiveChanges,
+  parseReviewPacketTaskContract,
   parseVerificationChecklist,
   readinessEventsFromReport,
   readinessEventsFromVerificationEnvelope,
@@ -1304,6 +1305,103 @@ Review this change.
   });
 });
 
+test("parseReviewPacketTaskContract extracts contract status and gaps", () => {
+  const contract = parseReviewPacketTaskContract(`Source: \`/tmp/AGENT_TASK.md\`
+
+- Status: \`warn\`
+- Required sections: \`6/8\`
+- Missing sections: Risks, Out of Scope
+- Placeholder markers: Objective
+
+\`\`\`md
+# Agent Task
+\`\`\`
+`);
+
+  assert.deepEqual(contract, {
+    source: "/tmp/AGENT_TASK.md",
+    status: "warn",
+    requiredSections: "6/8",
+    missingSections: ["Risks", "Out of Scope"],
+    placeholderMarkers: ["Objective"],
+  });
+});
+
+test("reviewPacketEvents imports passing task contracts as decisions", () => {
+  const packet = parseReviewPacket(`# Review Packet
+
+Repo: \`/tmp/repo\`
+Base: \`origin/main\`
+
+## Changed Files
+
+- \`README.md\`
+
+## Task Contract
+
+Source: \`/tmp/AGENT_TASK.md\`
+
+- Status: \`pass\`
+- Required sections: \`8/8\`
+- Missing sections: none
+- Placeholder markers: none
+
+\`\`\`md
+# Agent Task
+\`\`\`
+`);
+
+  const events = reviewPacketEvents(packet, {
+    source: "/tmp/review-packet.md",
+    link: "https://github.com/example/repo/commit/abc",
+  });
+  const summary = summarize(events);
+
+  assert.equal(events.length, 2);
+  assert.equal(events[1].type, "decision");
+  assert.equal(events[1].title, "Task contract passed");
+  assert.equal(events[1].status, "done");
+  assert.deepEqual(events[1].files, ["/tmp/review-packet.md", "/tmp/AGENT_TASK.md"]);
+  assert.deepEqual(events[1].links, ["https://github.com/example/repo/commit/abc"]);
+  assert.match(events[1].summary, /Required sections: 8\/8/);
+  assert.equal(summary.attention.length, 0);
+});
+
+test("reviewPacketEvents imports warning task contracts as blockers", () => {
+  const packet = parseReviewPacket(`# Review Packet
+
+Repo: \`/tmp/repo\`
+Base: \`origin/main\`
+
+## Changed Files
+
+- \`README.md\`
+
+## Task Contract
+
+Source: \`/tmp/AGENT_TASK.md\`
+
+- Status: \`warn\`
+- Required sections: \`6/8\`
+- Missing sections: Risks, Out of Scope
+- Placeholder markers: Objective
+`);
+
+  const events = reviewPacketEvents(packet, {
+    source: "/tmp/review-packet.md",
+  });
+  const summary = summarize(events);
+
+  assert.equal(events.length, 2);
+  assert.equal(events[1].type, "blocker");
+  assert.equal(events[1].title, "Task contract needs attention");
+  assert.equal(events[1].status, "blocked");
+  assert.deepEqual(events[1].files, ["/tmp/review-packet.md", "/tmp/AGENT_TASK.md"]);
+  assert.match(events[1].summary, /Missing sections: Risks, Out of Scope/);
+  assert.match(events[1].summary, /Placeholder markers: Objective/);
+  assert.equal(summary.attention.length, 1);
+});
+
 test("reviewPacketEvents turns review packet lanes and rendered envelopes into ledger evidence", () => {
   const packet = parseReviewPacket(`# Review Packet
 
@@ -1658,6 +1756,53 @@ No required blockers or recommendations.
     assert.ok(summary.files.includes("src/app.js"));
     assert.equal(summary.commands[0].command, "python3 codex_review_packet.py --repo .");
     assert.equal(summary.openCommands.length, 2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("import-review-packet appends embedded task contract evidence", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ledger-test-"));
+
+  try {
+    const ledgerPath = join(dir, "ledger.jsonl");
+    const packetPath = join(dir, "review-packet.md");
+    await writeFile(packetPath, `# Review Packet
+
+Repo: \`/tmp/repo\`
+Base: \`origin/main\`
+
+## Changed Files
+
+- \`README.md\`
+
+## Task Contract
+
+Source: \`/tmp/AGENT_TASK.md\`
+
+- Status: \`pass\`
+- Required sections: \`8/8\`
+- Missing sections: none
+- Placeholder markers: none
+
+\`\`\`md
+# Agent Task
+\`\`\`
+`, "utf8");
+
+    await runCli([
+      "import-review-packet",
+      "--ledger", ledgerPath,
+      "--packet", packetPath,
+    ]);
+    const events = await readLedger(ledgerPath);
+    const summary = summarize(events);
+
+    assert.equal(events.length, 2);
+    assert.equal(events[1].title, "Task contract passed");
+    assert.equal(events[1].status, "done");
+    assert.deepEqual(events[1].files, [packetPath, "/tmp/AGENT_TASK.md"]);
+    assert.equal(summary.attention.length, 0);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

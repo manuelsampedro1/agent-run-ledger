@@ -37,6 +37,7 @@ const REVIEW_PACKET_SECTIONS = new Set([
   "Review Map",
   "Sensitive Change Check",
   "Repo Context",
+  "Task Contract",
   "Repo Readiness",
   "CI Evidence",
   "Published HEAD",
@@ -651,6 +652,25 @@ export function parseReviewPacketPublishedHead(section) {
   };
 }
 
+export function parseReviewPacketTaskContract(section) {
+  if (!section.trim()) {
+    return null;
+  }
+
+  const status = markdownInlineMetric(section, "Status");
+  if (!status) {
+    return null;
+  }
+
+  return {
+    source: firstInlineCode(section.match(/^Source:\s+(.+?)\s*$/m)?.[1] ?? "") ?? "",
+    status,
+    requiredSections: markdownInlineMetric(section, "Required sections") ?? "",
+    missingSections: markdownListMetric(section, "Missing sections"),
+    placeholderMarkers: markdownListMetric(section, "Placeholder markers"),
+  };
+}
+
 export function parseReviewPacketSensitiveChanges(section) {
   const categories = [];
   let current = null;
@@ -685,6 +705,7 @@ export function parseReviewPacket(content) {
   const changedSection = markdownSection(content, "Changed Files");
   const reviewMapSection = markdownSection(content, "Review Map");
   const sensitiveChangeSection = markdownSection(content, "Sensitive Change Check");
+  const taskContractSection = markdownSection(content, "Task Contract");
   const readinessSection = markdownSection(content, "Repo Readiness");
   const ciEvidenceSection = markdownSection(content, "CI Evidence");
   const publishedHeadSection = markdownSection(content, "Published HEAD");
@@ -692,6 +713,7 @@ export function parseReviewPacket(content) {
   const changedFiles = inlineCodeBullets(changedSection);
   const lanes = parseReviewMap(reviewMapSection);
   const sensitiveChanges = parseReviewPacketSensitiveChanges(sensitiveChangeSection);
+  const taskContract = parseReviewPacketTaskContract(taskContractSection);
   const readinessReport = parseReviewPacketReadiness(readinessSection);
   const ciRun = parseReviewPacketCiEvidence(ciEvidenceSection);
   const publishedHead = parseReviewPacketPublishedHead(publishedHeadSection);
@@ -704,6 +726,7 @@ export function parseReviewPacket(content) {
     changedFiles,
     lanes,
     sensitiveChanges,
+    taskContract,
     readinessReport,
     ciRun,
     publishedHead,
@@ -746,6 +769,13 @@ export function reviewPacketEvents(packet, options = {}) {
     links,
   }));
 
+  const taskContractEvents = packet.taskContract
+    ? [taskContractEvent(packet.taskContract, {
+      source,
+      link: links,
+    })]
+    : [];
+
   const readinessEvents = packet.readinessReport
     ? readinessEventsFromReport(packet.readinessReport, {
       source,
@@ -783,7 +813,7 @@ export function reviewPacketEvents(packet, options = {}) {
     links,
   }));
 
-  return [summaryEvent, ...laneEvents, ...sensitiveEvents, ...ciEvidenceEvents, ...publishedHeadEvents, ...readinessEvents, ...verificationEvents];
+  return [summaryEvent, ...taskContractEvents, ...laneEvents, ...sensitiveEvents, ...ciEvidenceEvents, ...publishedHeadEvents, ...readinessEvents, ...verificationEvents];
 }
 
 export function doctorNeedsAttention(summary) {
@@ -1058,6 +1088,17 @@ function markdownTextMetric(markdown, label) {
   return markdown.match(new RegExp(`^- ${escapeRegExp(label)}: (.+?)\\s*$`, "m"))?.[1]?.trim() ?? null;
 }
 
+function markdownListMetric(markdown, label) {
+  const value = markdownTextMetric(markdown, label);
+  if (!value || value.toLowerCase() === "none") {
+    return [];
+  }
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 function markdownBoolMetric(markdown, label) {
   const value = markdownInlineMetric(markdown, label);
   if (value === null) {
@@ -1156,6 +1197,30 @@ function publishedHeadEvent(proof, options = {}) {
     status: passed ? "passed" : "blocked",
     files,
     commands: passed ? ["Published HEAD proof"] : [],
+    links,
+  });
+}
+
+function taskContractEvent(contract, options = {}) {
+  const source = options.source ?? "review packet";
+  const links = optionValues(options.link);
+  const missing = contract.missingSections.length
+    ? ` Missing sections: ${contract.missingSections.join(", ")}.`
+    : "";
+  const placeholders = contract.placeholderMarkers.length
+    ? ` Placeholder markers: ${contract.placeholderMarkers.join(", ")}.`
+    : "";
+  const passed = contract.status.toLowerCase() === "pass";
+
+  return createEvent({
+    type: passed ? "decision" : "blocker",
+    title: `Task contract ${passed ? "passed" : "needs attention"}`,
+    summary: `Imported task contract from ${source}. Status: ${contract.status}. Required sections: ${contract.requiredSections || "unknown"}.${missing}${placeholders}`,
+    status: passed ? "done" : "blocked",
+    files: uniqueStrings([
+      String(source),
+      contract.source,
+    ].filter(Boolean)),
     links,
   });
 }

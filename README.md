@@ -7,6 +7,7 @@ It records an agent run as newline-delimited JSON, validates the entries, and re
 Use it when Codex, Claude Code, or another agent changes a repo and you want a compact record of:
 
 - what the run was supposed to do
+- which task contract bounded the work
 - which decisions were made
 - which files changed
 - which commands were run
@@ -109,7 +110,7 @@ node bin/agent-run-ledger.js import-readiness \
   --command "node /path/to/repo-flightcheck/bin/repo-flightcheck.js . --contract"
 ```
 
-Import a review packet after a Codex or Claude Code handoff. This records the packet, changed files, review lanes, sensitive-change checks, any embedded CI evidence, any embedded published-HEAD proof, any embedded repo readiness section, and any embedded verification checklist as ledger evidence:
+Import a review packet after a Codex or Claude Code handoff. This records the packet, changed files, task contract, review lanes, sensitive-change checks, any embedded CI evidence, any embedded published-HEAD proof, any embedded repo readiness section, and any embedded verification checklist as ledger evidence:
 
 ```bash
 python3 /path/to/codex-review-packet/codex_review_packet.py \
@@ -121,6 +122,19 @@ node bin/agent-run-ledger.js import-review-packet \
   --ledger .agent-run/ledger.jsonl \
   --packet /tmp/review-packet.md \
   --command "python3 /path/to/codex-review-packet/codex_review_packet.py --repo . --verify-by-change /path/to/verify-by-change/verify_by_change.py"
+```
+
+Review packet import can also carry the task contract rendered by `codex-review-packet`:
+
+```bash
+python3 /path/to/codex-review-packet/codex_review_packet.py \
+  --repo . \
+  --task-contract ./AGENT_TASK.md \
+  --output /tmp/review-packet-with-task-contract.md
+
+node bin/agent-run-ledger.js import-review-packet \
+  --ledger .agent-run/ledger.jsonl \
+  --packet /tmp/review-packet-with-task-contract.md
 ```
 
 Review packet import can also carry public commit proof from `repo-flightcheck --check-remote --json`:
@@ -137,6 +151,8 @@ node bin/agent-run-ledger.js import-review-packet \
   --ledger .agent-run/ledger.jsonl \
   --packet /tmp/review-packet-with-published-head.md
 ```
+
+Embedded task contracts are imported as `done` decision events when the packet says `Status: pass`; any other status is imported as a `blocked` blocker event so `doctor --strict` keeps the handoff open until missing task sections or placeholders are fixed.
 
 Embedded sensitive-change checks are imported as `blocked` blocker events, so `doctor --strict` will keep the handoff open until a reviewer explicitly handles secret material, authorization or approval paths, and deploy or release paths.
 
