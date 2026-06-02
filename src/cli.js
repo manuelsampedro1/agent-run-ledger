@@ -17,6 +17,7 @@ Usage:
   agent-run-ledger note --ledger <path> --type <type> --title <text> --summary <text>
   agent-run-ledger import-checklist --ledger <path> --checklist <path> [--status planned]
   agent-run-ledger import-readiness --ledger <path> --readiness-report <path> [--command <cmd>]
+  agent-run-ledger import-ci --ledger <path> --ci-run <path> [--command <cmd>]
   agent-run-ledger import-review-packet --ledger <path> --packet <path> [--command <cmd>]
   agent-run-ledger doctor --ledger <path> [--json] [--strict]
   agent-run-ledger report --ledger <path> --out <path>
@@ -187,6 +188,23 @@ export async function runCli(argv) {
     return;
   }
 
+  if (command === "import-ci") {
+    requireOption(args, "ledger");
+    requireOption(args, "ci-run");
+
+    const content = await readFile(args["ci-run"], "utf8");
+    const run = parseGitHubActionsRun(content);
+    const event = ciRunEvent(run, {
+      source: args["ci-run"],
+      command: args.command,
+      link: args.link,
+    });
+
+    await appendEvent(args.ledger, event);
+    console.log(`Imported CI run evidence into ${args.ledger}`);
+    return;
+  }
+
   if (command === "report") {
     requireOption(args, "ledger");
     requireOption(args, "out");
@@ -352,6 +370,82 @@ export function parseRepoReadinessReport(content) {
     })),
     nextFixes: Array.isArray(payload.nextFixes) ? payload.nextFixes.map(String) : [],
   };
+}
+
+export function parseGitHubActionsRun(content) {
+  let payload;
+  try {
+    payload = JSON.parse(content);
+  } catch (error) {
+    throw new Error(`Invalid CI run JSON: ${error.message}`);
+  }
+
+  if (payload?.workflow_runs && Array.isArray(payload.workflow_runs)) {
+    payload = payload.workflow_runs[0];
+  }
+
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("CI run report must be a JSON object.");
+  }
+
+  const id = payload.id ?? payload.run_id;
+  const name = payload.name ?? payload.workflow_name;
+  const status = payload.status;
+  const conclusion = payload.conclusion;
+
+  if (!id || !name || !status) {
+    throw new Error("CI run report must include id, name, and status.");
+  }
+
+  return {
+    id: String(id),
+    name: String(name),
+    status: String(status),
+    conclusion: conclusion === null || conclusion === undefined ? null : String(conclusion),
+    htmlUrl: payload.html_url ? String(payload.html_url) : "",
+    headSha: payload.head_sha ? String(payload.head_sha) : "",
+    headBranch: payload.head_branch ? String(payload.head_branch) : "",
+    event: payload.event ? String(payload.event) : "",
+  };
+}
+
+export function ciRunEvent(run, options = {}) {
+  const source = options.source ?? "CI run report";
+  const commands = options.command?.length ? options.command : [`GitHub Actions: ${run.name}`];
+  const links = uniqueStrings([run.htmlUrl, ...(options.link ?? [])].filter(Boolean));
+  const detail = [
+    `status ${run.status}`,
+    run.conclusion ? `conclusion ${run.conclusion}` : null,
+    run.headBranch ? `branch ${run.headBranch}` : null,
+    run.headSha ? `sha ${run.headSha}` : null,
+  ].filter(Boolean).join(", ");
+
+  return createEvent({
+    type: "command",
+    title: `CI ${ciRunStatus(run)}: ${run.name}`,
+    summary: `Imported GitHub Actions run ${run.id} from ${source}: ${detail}.`,
+    status: ciRunStatus(run),
+    files: [String(source)],
+    commands,
+    links,
+  });
+}
+
+function ciRunStatus(run) {
+  if (run.status !== "completed") {
+    return run.status === "queued" || run.status === "requested" || run.status === "pending" ? "planned" : "running";
+  }
+
+  if (run.conclusion === "success") {
+    return "passed";
+  }
+  if (run.conclusion === "skipped" || run.conclusion === "cancelled") {
+    return "skipped";
+  }
+  if (["failure", "timed_out", "startup_failure", "action_required"].includes(run.conclusion)) {
+    return "failed";
+  }
+  return "done";
 }
 
 function normalizeReadinessContract(payload) {
@@ -659,6 +753,10 @@ function optionalNumber(value, fallback) {
     return fallback;
   }
   return numberOrDefault(value, fallback);
+}
+
+function uniqueStrings(values) {
+  return Array.from(new Set(values.map(String).filter(Boolean)));
 }
 
 function markdownSection(markdown, title) {

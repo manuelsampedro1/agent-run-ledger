@@ -14,8 +14,10 @@ import {
 } from "../src/ledger.js";
 import {
   doctorNeedsAttention,
+  ciRunEvent,
   parseArgs,
   parseChecklistInput,
+  parseGitHubActionsRun,
   parseJsonVerificationEnvelope,
   parseVerificationEnvelopeReadiness,
   parseRepoReadinessReport,
@@ -182,6 +184,117 @@ test("parseArgs supports repeatable evidence fields", () => {
   assert.deepEqual(args.command, ["npm test"]);
   assert.equal(args.json, true);
   assert.equal(parseArgs(["--ledger", "run.jsonl", "--strict"]).strict, true);
+});
+
+test("parseGitHubActionsRun normalizes single run and list payloads", () => {
+  const single = parseGitHubActionsRun(JSON.stringify({
+    id: 123,
+    name: "CI",
+    status: "completed",
+    conclusion: "success",
+    html_url: "https://github.com/example/repo/actions/runs/123",
+    head_sha: "abc123",
+    head_branch: "main",
+    event: "push",
+  }));
+  const fromList = parseGitHubActionsRun(JSON.stringify({
+    workflow_runs: [
+      {
+        id: 456,
+        name: "build",
+        status: "in_progress",
+        conclusion: null,
+      },
+    ],
+  }));
+
+  assert.deepEqual(single, {
+    id: "123",
+    name: "CI",
+    status: "completed",
+    conclusion: "success",
+    htmlUrl: "https://github.com/example/repo/actions/runs/123",
+    headSha: "abc123",
+    headBranch: "main",
+    event: "push",
+  });
+  assert.equal(fromList.id, "456");
+  assert.equal(fromList.conclusion, null);
+});
+
+test("ciRunEvent maps GitHub Actions conclusions to command evidence", () => {
+  const passed = ciRunEvent(parseGitHubActionsRun(JSON.stringify({
+    id: 123,
+    name: "CI",
+    status: "completed",
+    conclusion: "success",
+    html_url: "https://github.com/example/repo/actions/runs/123",
+    head_sha: "abc123",
+    head_branch: "main",
+  })), {
+    source: "/tmp/ci-run.json",
+  });
+  const failed = ciRunEvent(parseGitHubActionsRun(JSON.stringify({
+    id: 124,
+    name: "CI",
+    status: "completed",
+    conclusion: "failure",
+  })));
+  const running = ciRunEvent(parseGitHubActionsRun(JSON.stringify({
+    id: 125,
+    name: "CI",
+    status: "in_progress",
+    conclusion: null,
+  })));
+
+  assert.equal(passed.type, "command");
+  assert.equal(passed.status, "passed");
+  assert.equal(passed.title, "CI passed: CI");
+  assert.deepEqual(passed.commands, ["GitHub Actions: CI"]);
+  assert.deepEqual(passed.files, ["/tmp/ci-run.json"]);
+  assert.deepEqual(passed.links, ["https://github.com/example/repo/actions/runs/123"]);
+  assert.match(passed.summary, /sha abc123/);
+  assert.equal(failed.status, "failed");
+  assert.equal(running.status, "running");
+});
+
+test("import-ci appends GitHub Actions evidence to a ledger", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ledger-test-"));
+  const originalLog = console.log;
+  const lines = [];
+
+  try {
+    const ledgerPath = join(dir, "ledger.jsonl");
+    const ciRunPath = join(dir, "ci-run.json");
+    await writeFile(ciRunPath, JSON.stringify({
+      id: 123,
+      name: "CI",
+      status: "completed",
+      conclusion: "success",
+      html_url: "https://github.com/example/repo/actions/runs/123",
+      head_sha: "abc123",
+      head_branch: "main",
+    }));
+    console.log = (line) => {
+      lines.push(line);
+    };
+
+    await runCli([
+      "import-ci",
+      "--ledger", ledgerPath,
+      "--ci-run", ciRunPath,
+      "--command", "GitHub Actions CI",
+    ]);
+
+    const events = await readLedger(ledgerPath);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].status, "passed");
+    assert.deepEqual(events[0].commands, ["GitHub Actions CI"]);
+    assert.ok(lines.includes(`Imported CI run evidence into ${ledgerPath}`));
+  } finally {
+    console.log = originalLog;
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("doctor command can emit machine-readable JSON", async () => {

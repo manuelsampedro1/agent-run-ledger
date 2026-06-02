@@ -10,6 +10,7 @@ Use it when Codex, Claude Code, or another agent changes a repo and you want a c
 - which decisions were made
 - which files changed
 - which commands were run
+- which CI runs backed the closeout
 - what passed, failed, or blocked the work
 - what should be reviewed next
 
@@ -122,6 +123,21 @@ node bin/agent-run-ledger.js import-review-packet \
 
 Embedded verification checks are imported as `planned` command events, so `doctor --strict` will keep the handoff open until those commands are recorded as passed, skipped, failed, or blocked.
 
+Import GitHub Actions run evidence after a public push. Pass a JSON response from the GitHub Actions run API or the first item from a `workflow_runs` list response:
+
+```bash
+curl -fsS \
+  https://api.github.com/repos/OWNER/REPO/actions/runs/RUN_ID \
+  > /tmp/ci-run.json
+
+node bin/agent-run-ledger.js import-ci \
+  --ledger .agent-run/ledger.jsonl \
+  --ci-run /tmp/ci-run.json \
+  --command "GitHub Actions CI"
+```
+
+The imported CI run becomes command evidence with `passed`, `failed`, `running`, `planned`, `skipped`, or `done` status and carries the run URL when the JSON includes `html_url`.
+
 Use strict doctor mode when a handoff should fail until planned checks are executed and blockers are resolved:
 
 ```bash
@@ -217,6 +233,7 @@ agent-run-ledger import-checklist --ledger .agent-run/ledger.jsonl --checklist /
 agent-run-ledger import-checklist --ledger .agent-run/ledger.jsonl --checklist /tmp/verification-envelope.json
 agent-run-ledger import-readiness --ledger .agent-run/ledger.jsonl --readiness-report /tmp/repo-readiness.json
 agent-run-ledger import-review-packet --ledger .agent-run/ledger.jsonl --packet /tmp/review-packet.md
+agent-run-ledger import-ci --ledger .agent-run/ledger.jsonl --ci-run /tmp/ci-run.json
 agent-run-ledger doctor --ledger .agent-run/ledger.jsonl
 agent-run-ledger doctor --ledger .agent-run/ledger.jsonl --json
 agent-run-ledger doctor --ledger .agent-run/ledger.jsonl --strict
