@@ -160,12 +160,18 @@ export async function runCli(argv) {
 
     const content = await readFile(args["readiness-report"], "utf8");
     const report = parseRepoReadinessReport(content);
-    const events = readinessEventsFromReport(report, {
-      source: args["readiness-report"],
-      command: args.command,
-      link: args.link,
-      status: args.status,
-    });
+    const events = [
+      ...taskContractEventsFromReadinessReport(report, {
+        source: args["readiness-report"],
+        link: args.link,
+      }),
+      ...readinessEventsFromReport(report, {
+        source: args["readiness-report"],
+        command: args.command,
+        link: args.link,
+        status: args.status,
+      }),
+    ];
 
     for (const event of events) {
       await appendEvent(args.ledger, event);
@@ -429,6 +435,7 @@ export function parseRepoReadinessReport(content) {
       evidence: Array.isArray(check?.evidence) ? check.evidence.map(String) : [],
     })),
     nextFixes: Array.isArray(payload.nextFixes) ? payload.nextFixes.map(String) : [],
+    taskContract: normalizeReadinessTaskContract(payload.taskContract ?? payload.task_contract),
   };
 }
 
@@ -533,6 +540,24 @@ function normalizeReadinessContract(payload) {
     },
     checks: [...required, ...recommended],
     nextFixes: Array.isArray(payload.nextFixes) ? payload.nextFixes.map(String) : [],
+    taskContract: normalizeReadinessTaskContract(payload.taskContract ?? payload.task_contract),
+  };
+}
+
+function normalizeReadinessTaskContract(contract) {
+  if (!contract || typeof contract !== "object" || Array.isArray(contract)) {
+    return null;
+  }
+  if (contract.present === false) {
+    return null;
+  }
+
+  return {
+    source: optionalString(contract.source),
+    status: optionalString(contract.status) || "unknown",
+    requiredSections: optionalString(contract.requiredSections ?? contract.required_sections),
+    missingSections: stringList(contract.missingSections ?? contract.missing_sections),
+    placeholderMarkers: stringList(contract.placeholderMarkers ?? contract.placeholder_markers),
   };
 }
 
@@ -599,6 +624,17 @@ export function readinessEventsFromReport(report, options = {}) {
   }));
 
   return [summaryEvent, ...attentionEvents];
+}
+
+export function taskContractEventsFromReadinessReport(report, options = {}) {
+  if (!report.taskContract) {
+    return [];
+  }
+
+  return [taskContractEvent(report.taskContract, {
+    source: options.source ?? "readiness report",
+    link: options.link,
+  })];
 }
 
 export function parseReviewPacketReadiness(section) {

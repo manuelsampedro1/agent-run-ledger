@@ -35,6 +35,7 @@ import {
   reviewPacketEvents,
   runCli,
   taskContractEventsFromVerificationEnvelope,
+  taskContractEventsFromReadinessReport,
 } from "../src/cli.js";
 import { renderReport } from "../src/report.js";
 
@@ -815,6 +816,14 @@ test("parseRepoReadinessReport normalizes repo-flightcheck JSON", () => {
       },
     ],
     nextFixes: ["Verification command: expose one obvious test command."],
+    taskContract: {
+      present: true,
+      source: "AGENT_TASK.md",
+      status: "pass",
+      requiredSections: "8/8",
+      missingSections: [],
+      placeholderMarkers: [],
+    },
   }));
 
   assert.equal(report.stack, "python");
@@ -822,6 +831,13 @@ test("parseRepoReadinessReport normalizes repo-flightcheck JSON", () => {
   assert.equal(report.summary.criticalFailures, 1);
   assert.equal(report.checks[0].title, "Verification command");
   assert.deepEqual(report.nextFixes, ["Verification command: expose one obvious test command."]);
+  assert.deepEqual(report.taskContract, {
+    source: "AGENT_TASK.md",
+    status: "pass",
+    requiredSections: "8/8",
+    missingSections: [],
+    placeholderMarkers: [],
+  });
 });
 
 test("parseRepoReadinessReport normalizes repo-flightcheck agent contracts", () => {
@@ -858,6 +874,14 @@ test("parseRepoReadinessReport normalizes repo-flightcheck agent contracts", () 
       },
     ],
     nextFixes: ["Working tree: Start from a clean Git state."],
+    taskContract: {
+      present: true,
+      source: "AGENT_TASK.md",
+      status: "warn",
+      requiredSections: "7/8",
+      missingSections: ["Verification"],
+      placeholderMarkers: ["Risks"],
+    },
   }));
 
   assert.equal(report.stack, "node");
@@ -868,6 +892,51 @@ test("parseRepoReadinessReport normalizes repo-flightcheck agent contracts", () 
   assert.equal(report.checks[0].required, true);
   assert.equal(report.checks[1].required, false);
   assert.deepEqual(report.nextFixes, ["Working tree: Start from a clean Git state."]);
+  assert.deepEqual(report.taskContract, {
+    source: "AGENT_TASK.md",
+    status: "warn",
+    requiredSections: "7/8",
+    missingSections: ["Verification"],
+    placeholderMarkers: ["Risks"],
+  });
+});
+
+test("taskContractEventsFromReadinessReport records structured readiness task contracts", () => {
+  const report = parseRepoReadinessReport(JSON.stringify({
+    stack: "node",
+    summary: {
+      score: 100,
+      pointsPossible: 100,
+      passed: 14,
+      warnings: 0,
+      failed: 0,
+      criticalFailures: 0,
+    },
+    checks: [],
+    nextFixes: [],
+    taskContract: {
+      present: true,
+      source: "AGENT_TASK.md",
+      status: "warn",
+      requiredSections: "7/8",
+      missingSections: ["Risks"],
+      placeholderMarkers: [],
+    },
+  }));
+
+  const events = taskContractEventsFromReadinessReport(report, {
+    source: "/tmp/repo-readiness.json",
+    link: "https://github.com/example/repo/commit/abc",
+  });
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, "blocker");
+  assert.equal(events[0].title, "Task contract needs attention");
+  assert.equal(events[0].status, "blocked");
+  assert.deepEqual(events[0].files, ["/tmp/repo-readiness.json", "AGENT_TASK.md"]);
+  assert.deepEqual(events[0].links, ["https://github.com/example/repo/commit/abc"]);
+  assert.match(events[0].summary, /Required sections: 7\/8/);
+  assert.match(events[0].summary, /Missing sections: Risks/);
 });
 
 test("readinessEventsFromReport marks clean readiness as passed", () => {
@@ -1136,6 +1205,55 @@ test("import-readiness accepts repo-flightcheck agent contracts", async () => {
     assert.equal(events[1].status, "blocked");
     assert.deepEqual(events[1].files, [readinessPath, "README.md"]);
     assert.equal(summary.attention.length, 2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("import-readiness records structured task contract evidence first", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ledger-test-"));
+
+  try {
+    const ledgerPath = join(dir, "ledger.jsonl");
+    const readinessPath = join(dir, "readiness.json");
+    await writeFile(readinessPath, JSON.stringify({
+      stack: "node",
+      summary: {
+        score: 100,
+        pointsPossible: 100,
+        passed: 14,
+        warnings: 0,
+        failed: 0,
+        criticalFailures: 0,
+      },
+      checks: [],
+      nextFixes: [],
+      taskContract: {
+        present: true,
+        source: "AGENT_TASK.md",
+        status: "pass",
+        requiredSections: "8/8",
+        missingSections: [],
+        placeholderMarkers: [],
+      },
+    }), "utf8");
+
+    await runCli([
+      "import-readiness",
+      "--ledger", ledgerPath,
+      "--readiness-report", readinessPath,
+      "--command", "node bin/repo-flightcheck.js . --json",
+    ]);
+    const events = await readLedger(ledgerPath);
+    const summary = summarize(events);
+
+    assert.equal(events.length, 2);
+    assert.equal(events[0].title, "Task contract passed");
+    assert.equal(events[0].status, "done");
+    assert.deepEqual(events[0].files, [readinessPath, "AGENT_TASK.md"]);
+    assert.equal(events[1].title, "Repo readiness: 100/100");
+    assert.equal(events[1].status, "passed");
+    assert.equal(summary.attention.length, 0);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
