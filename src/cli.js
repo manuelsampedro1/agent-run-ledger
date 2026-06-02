@@ -236,11 +236,35 @@ export async function runCli(argv) {
 }
 
 export function parseChecklistInput(content) {
+  const renderedEnvelope = parseRenderedVerificationEnvelope(content);
+  if (renderedEnvelope) {
+    return renderedEnvelope.entries;
+  }
+
   const parsed = parseJsonVerificationEnvelope(content);
   if (parsed) {
     return parsed;
   }
   return parseVerificationChecklist(content);
+}
+
+export function parseRenderedVerificationEnvelope(content) {
+  const schema = firstInlineCode(content.match(/^Envelope:\s+(.+?)\s*$/m)?.[1] ?? "");
+  if (schema !== "verify-by-change.v1") {
+    return null;
+  }
+
+  const source = firstInlineCode(content.match(/^Source:\s+(.+?)\s*$/m)?.[1] ?? "") ?? "";
+  const verificationSource = firstInlineCode(content.match(/^Verification source:\s+(.+?)\s*$/m)?.[1] ?? "") ?? "";
+  const checklistMarkdown = fencedMarkdownBlock(content) ?? content;
+  const entries = parseVerificationChecklist(checklistMarkdown);
+
+  return {
+    schemaVersion: schema,
+    source,
+    verificationSource,
+    entries,
+  };
 }
 
 export function parseJsonVerificationEnvelope(content) {
@@ -612,7 +636,8 @@ export function parseReviewPacket(content) {
   const lanes = parseReviewMap(reviewMapSection);
   const readinessReport = parseReviewPacketReadiness(readinessSection);
   const ciRun = parseReviewPacketCiEvidence(ciEvidenceSection);
-  const verificationEntries = parseChecklistInput(verificationSection);
+  const verificationEnvelope = parseRenderedVerificationEnvelope(verificationSection);
+  const verificationEntries = verificationEnvelope?.entries ?? parseChecklistInput(verificationSection);
 
   return {
     repo,
@@ -621,6 +646,7 @@ export function parseReviewPacket(content) {
     lanes,
     readinessReport,
     ciRun,
+    verificationEnvelope,
     verificationEntries,
   };
 }
@@ -668,9 +694,14 @@ export function reviewPacketEvents(packet, options = {}) {
   const verificationEvents = (packet.verificationEntries ?? []).map((entry) => createEvent({
     type: "command",
     title: `Verify ${entry.title}`,
-    summary: `Imported embedded verification checklist section from ${source}.`,
+    summary: verificationSummary(source, packet.verificationEnvelope),
     status: "planned",
-    files: entry.files,
+    files: uniqueStrings([
+      ...entry.files,
+      ...(packet.verificationEnvelope?.source && looksLikeFile(packet.verificationEnvelope.source)
+        ? [packet.verificationEnvelope.source]
+        : []),
+    ]),
     commands: entry.commands,
     links,
   }));
@@ -805,6 +836,17 @@ function optionValues(value) {
   return Array.isArray(value) ? value : [value];
 }
 
+function verificationSummary(source, envelope) {
+  if (!envelope) {
+    return `Imported embedded verification checklist section from ${source}.`;
+  }
+
+  const detail = envelope.verificationSource
+    ? ` Verification source: ${envelope.verificationSource}.`
+    : "";
+  return `Imported embedded ${envelope.schemaVersion} verification envelope from ${source}.${detail}`;
+}
+
 function markdownSection(markdown, title) {
   const lines = markdown.split(/\r?\n/);
   const headings = [];
@@ -825,6 +867,11 @@ function markdownSection(markdown, title) {
   const selected = title === "Verification Checklist" ? candidates.at(-1) : candidates[0];
   const end = headings.find((heading) => heading.index > selected.index)?.index ?? lines.length;
   return lines.slice(selected.index + 1, end).join("\n");
+}
+
+function fencedMarkdownBlock(markdown) {
+  const match = markdown.match(/```(?:md|markdown)?\s*\n([\s\S]*?)\n```/i);
+  return match?.[1] ?? null;
 }
 
 function parseReviewMap(section) {

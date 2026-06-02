@@ -19,6 +19,7 @@ import {
   parseChecklistInput,
   parseGitHubActionsRun,
   parseJsonVerificationEnvelope,
+  parseRenderedVerificationEnvelope,
   parseVerificationEnvelopeReadiness,
   parseRepoReadinessReport,
   parseReviewPacket,
@@ -428,6 +429,38 @@ test("parseJsonVerificationEnvelope extracts verify-by-change categories", () =>
     },
     {
       title: "docs",
+      files: ["README.md"],
+      commands: ["Review rendered Markdown and verify links if public-facing."],
+    },
+  ]);
+});
+
+test("parseRenderedVerificationEnvelope extracts rendered packet metadata and entries", () => {
+  const envelope = parseRenderedVerificationEnvelope(`Source: \`verify-by-change: /tmp/verify_by_change.py\`
+Envelope: \`verify-by-change.v1\`
+Verification source: \`git, repo=/tmp/repo\`
+
+\`\`\`md
+# Verification Checklist
+
+Changed files:
+
+- \`README.md\`
+
+## Docs
+
+- \`README.md\`
+
+- Review rendered Markdown and verify links if public-facing.
+\`\`\`
+`);
+
+  assert.equal(envelope.schemaVersion, "verify-by-change.v1");
+  assert.equal(envelope.source, "verify-by-change: /tmp/verify_by_change.py");
+  assert.equal(envelope.verificationSource, "git, repo=/tmp/repo");
+  assert.deepEqual(envelope.entries, [
+    {
+      title: "Docs",
       files: ["README.md"],
       commands: ["Review rendered Markdown and verify links if public-facing."],
     },
@@ -1144,9 +1177,21 @@ Review this change.
       commands: ["Review rendered Markdown and verify links if public-facing."],
     },
   ]);
+  assert.deepEqual(packet.verificationEnvelope, {
+    schemaVersion: "verify-by-change.v1",
+    source: "/tmp/verification-envelope.json",
+    verificationSource: "explicit_paths",
+    entries: [
+      {
+        title: "Docs",
+        files: ["README.md"],
+        commands: ["Review rendered Markdown and verify links if public-facing."],
+      },
+    ],
+  });
 });
 
-test("reviewPacketEvents turns review packet lanes into ledger evidence", () => {
+test("reviewPacketEvents turns review packet lanes and rendered envelopes into ledger evidence", () => {
   const packet = parseReviewPacket(`# Review Packet
 
 Repo: \`/tmp/repo\`
@@ -1181,7 +1226,13 @@ Required before agent:
 
 ## Verification Checklist
 
+Source: \`/tmp/verification-envelope.json\`
+Envelope: \`verify-by-change.v1\`
+Verification source: \`git, repo=/tmp/repo\`
+
 \`\`\`md
+# Verification Checklist
+
 ## Docs
 
 - \`README.md\`
@@ -1213,6 +1264,9 @@ Required before agent:
   assert.equal(events[4].type, "command");
   assert.equal(events[4].status, "planned");
   assert.equal(events[4].title, "Verify Docs");
+  assert.match(events[4].summary, /verify-by-change\.v1 verification envelope/);
+  assert.match(events[4].summary, /Verification source: git, repo=\/tmp\/repo/);
+  assert.deepEqual(events[4].files, ["README.md", "/tmp/verification-envelope.json"]);
   assert.deepEqual(events[4].commands, ["Review rendered Markdown."]);
 });
 

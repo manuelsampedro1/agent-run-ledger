@@ -123,6 +123,8 @@ node bin/agent-run-ledger.js import-review-packet \
 
 Embedded CI evidence is imported as command evidence with `passed`, `failed`, `running`, `planned`, `skipped`, or `done` status. Embedded verification checks are imported as `planned` command events, so `doctor --strict` will keep the handoff open until those commands are recorded as passed, skipped, failed, or blocked.
 
+When `codex-review-packet` renders a generated `verify-by-change.v1` envelope inside the packet, `agent-run-ledger` keeps the envelope schema and verification source in the imported command summaries instead of treating the checklist as anonymous Markdown.
+
 Import GitHub Actions run evidence after a public push. Pass a JSON response from the GitHub Actions run API or the first item from a `workflow_runs` list response:
 
 ```bash
