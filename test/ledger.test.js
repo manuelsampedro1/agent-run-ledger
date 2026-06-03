@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,8 +16,10 @@ import {
 import {
   doctorNeedsAttention,
   ciRunEvent,
+  commandReceiptEvent,
   parseArgs,
   parseChecklistInput,
+  parseCommandReceipt,
   parseGitHubActionsRun,
   parseJsonVerificationEnvelope,
   parseRenderedVerificationEnvelope,
@@ -36,6 +39,7 @@ import {
   runCli,
   taskContractEventsFromVerificationEnvelope,
   taskContractEventsFromReadinessReport,
+  verifyCommandReceiptEvidence,
 } from "../src/cli.js";
 import { renderReport } from "../src/report.js";
 
@@ -305,6 +309,147 @@ test("import-ci appends GitHub Actions evidence to a ledger", async () => {
   }
 });
 
+test("parseCommandReceipt normalizes command receipts", () => {
+  const receipt = parseCommandReceipt(JSON.stringify({
+    schema_version: "agent-command-receipt.v1",
+    command: "make test",
+    status: "pass",
+    exit_code: 0,
+    cwd: ".",
+    created_at: "2026-06-02T00:00:00Z",
+    notes: ["Captured after local test run."],
+    evidence: [
+      {
+        path: "test-output.log",
+        size_bytes: 8,
+        sha256: "ABCDEFabcdef0123456789abcdef0123456789abcdef0123456789abcdef0123",
+      },
+    ],
+  }));
+
+  assert.equal(receipt.schemaVersion, "agent-command-receipt.v1");
+  assert.equal(receipt.command, "make test");
+  assert.equal(receipt.status, "pass");
+  assert.equal(receipt.exitCode, 0);
+  assert.equal(receipt.evidence[0].sha256, "abcdefabcdef0123456789abcdef0123456789abcdef0123456789abcdef0123");
+});
+
+test("commandReceiptEvent imports verified receipts as command evidence", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ledger-test-"));
+
+  try {
+    const evidencePath = join(dir, "test-output.log");
+    await writeFile(evidencePath, "tests ok\n", "utf8");
+    const receipt = parseCommandReceipt(JSON.stringify({
+      schema_version: "agent-command-receipt.v1",
+      command: "make test",
+      status: "pass",
+      exit_code: 0,
+      cwd: ".",
+      created_at: "2026-06-02T00:00:00Z",
+      notes: ["Captured after local test run."],
+      evidence: [
+        {
+          path: "test-output.log",
+          size_bytes: 9,
+          sha256: sha256Text("tests ok\n"),
+        },
+      ],
+    }));
+
+    const event = await commandReceiptEvent(receipt, {
+      source: join(dir, "receipt.json"),
+      baseDir: dir,
+      link: "https://github.com/example/repo/actions/runs/123",
+    });
+
+    assert.equal(event.type, "command");
+    assert.equal(event.status, "passed");
+    assert.equal(event.title, "Command receipt passed: make test");
+    assert.deepEqual(event.files, [join(dir, "receipt.json"), "test-output.log"]);
+    assert.deepEqual(event.commands, ["make test"]);
+    assert.deepEqual(event.links, ["https://github.com/example/repo/actions/runs/123"]);
+    assert.match(event.summary, /1\/1 evidence files checked/);
+    assert.match(event.summary, /Captured after local test run/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("commandReceiptEvent blocks receipts with drifted evidence", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ledger-test-"));
+
+  try {
+    const evidencePath = join(dir, "build.log");
+    await writeFile(evidencePath, "build changed\n", "utf8");
+    const receipt = parseCommandReceipt(JSON.stringify({
+      schema_version: "agent-command-receipt.v1",
+      command: "make build",
+      status: "pass",
+      exit_code: 0,
+      evidence: [
+        {
+          path: "build.log",
+          size_bytes: 9,
+          sha256: sha256Text("build ok\n"),
+        },
+      ],
+    }));
+    const verification = await verifyCommandReceiptEvidence(receipt, { baseDir: dir });
+    const event = await commandReceiptEvent(receipt, {
+      source: join(dir, "receipt.json"),
+      baseDir: dir,
+    });
+
+    assert.deepEqual(verification.findings.map((finding) => finding.code), ["size-mismatch", "hash-mismatch"]);
+    assert.equal(event.status, "blocked");
+    assert.match(event.summary, /size-mismatch build\.log/);
+    assert.match(event.summary, /hash-mismatch build\.log/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("import-receipt appends verified command receipt evidence", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ledger-test-"));
+
+  try {
+    const ledgerPath = join(dir, "ledger.jsonl");
+    const receiptPath = join(dir, "receipt.json");
+    const evidencePath = join(dir, "lint.log");
+    await writeFile(evidencePath, "lint ok\n", "utf8");
+    await writeFile(receiptPath, JSON.stringify({
+      schema_version: "agent-command-receipt.v1",
+      command: "make lint",
+      status: "pass",
+      exit_code: 0,
+      evidence: [
+        {
+          path: "lint.log",
+          size_bytes: 8,
+          sha256: sha256Text("lint ok\n"),
+        },
+      ],
+    }), "utf8");
+
+    await runCli([
+      "import-receipt",
+      "--ledger", ledgerPath,
+      "--receipt", receiptPath,
+      "--base-dir", dir,
+    ]);
+
+    const events = await readLedger(ledgerPath);
+    const summary = summarize(events);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].status, "passed");
+    assert.deepEqual(events[0].commands, ["make lint"]);
+    assert.equal(summary.attention.length, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("doctor command can emit machine-readable JSON", async () => {
   const dir = await mkdtemp(join(tmpdir(), "ledger-test-"));
   const originalLog = console.log;
@@ -331,6 +476,10 @@ test("doctor command can emit machine-readable JSON", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+function sha256Text(text) {
+  return createHash("sha256").update(text).digest("hex");
+}
 
 test("doctor strict marks open command evidence with a non-zero exit code", async () => {
   const dir = await mkdtemp(join(tmpdir(), "ledger-test-"));

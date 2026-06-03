@@ -1,5 +1,6 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import {
   appendEvent,
   createEvent,
@@ -18,6 +19,7 @@ Usage:
   agent-run-ledger import-checklist --ledger <path> --checklist <path> [--status planned]
   agent-run-ledger import-readiness --ledger <path> --readiness-report <path> [--command <cmd>]
   agent-run-ledger import-ci --ledger <path> --ci-run <path> [--command <cmd>]
+  agent-run-ledger import-receipt --ledger <path> --receipt <path> [--base-dir <dir>]
   agent-run-ledger import-review-packet --ledger <path> --packet <path> [--command <cmd>]
   agent-run-ledger doctor --ledger <path> [--json] [--strict]
   agent-run-ledger report --ledger <path> --out <path>
@@ -216,6 +218,23 @@ export async function runCli(argv) {
 
     await appendEvent(args.ledger, event);
     console.log(`Imported CI run evidence into ${args.ledger}`);
+    return;
+  }
+
+  if (command === "import-receipt") {
+    requireOption(args, "ledger");
+    requireOption(args, "receipt");
+
+    const content = await readFile(args.receipt, "utf8");
+    const receipt = parseCommandReceipt(content);
+    const event = await commandReceiptEvent(receipt, {
+      source: args.receipt,
+      baseDir: args["base-dir"] ?? process.cwd(),
+      link: args.link,
+    });
+
+    await appendEvent(args.ledger, event);
+    console.log(`Imported command receipt into ${args.ledger}`);
     return;
   }
 
@@ -495,6 +514,133 @@ export function ciRunEvent(run, options = {}) {
     status: ciRunStatus(run),
     files,
     commands: commands.length ? commands : [`GitHub Actions: ${run.name}`],
+    links,
+  });
+}
+
+export function parseCommandReceipt(content) {
+  let payload;
+  try {
+    payload = JSON.parse(content);
+  } catch (error) {
+    throw new Error(`Invalid command receipt JSON: ${error.message}`);
+  }
+
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("Command receipt must be a JSON object.");
+  }
+  if (payload.schema_version !== "agent-command-receipt.v1") {
+    throw new Error("Command receipt must use schema_version agent-command-receipt.v1.");
+  }
+  if (!payload.command || typeof payload.command !== "string") {
+    throw new Error("Command receipt must include a command string.");
+  }
+
+  const status = String(payload.status ?? "unknown");
+  if (!["pass", "fail", "skipped", "unknown"].includes(status)) {
+    throw new Error("Command receipt status must be pass, fail, skipped, or unknown.");
+  }
+
+  const evidence = payload.evidence;
+  if (evidence !== undefined && !Array.isArray(evidence)) {
+    throw new Error("Command receipt evidence must be a list.");
+  }
+
+  return {
+    schemaVersion: payload.schema_version,
+    command: payload.command.trim(),
+    status,
+    exitCode: payload.exit_code === null || payload.exit_code === undefined
+      ? null
+      : numberOrDefault(payload.exit_code, null),
+    cwd: optionalString(payload.cwd) || ".",
+    createdAt: optionalString(payload.created_at),
+    notes: stringList(payload.notes),
+    evidence: (evidence ?? []).map((item, index) => normalizeReceiptEvidence(item, index)),
+  };
+}
+
+export async function verifyCommandReceiptEvidence(receipt, options = {}) {
+  const baseDir = options.baseDir ?? process.cwd();
+  const findings = [];
+  let checked = 0;
+
+  for (const item of receipt.evidence) {
+    const path = resolveReceiptEvidencePath(baseDir, item.path);
+    let fileStat;
+    try {
+      fileStat = await stat(path);
+    } catch {
+      findings.push({
+        code: "missing-evidence",
+        path: item.path,
+        message: `Evidence file is missing: ${item.path}`,
+      });
+      continue;
+    }
+
+    if (!fileStat.isFile()) {
+      findings.push({
+        code: "invalid-evidence-path",
+        path: item.path,
+        message: `Evidence path is not a file: ${item.path}`,
+      });
+      continue;
+    }
+
+    checked += 1;
+    const actualSize = fileStat.size;
+    const actualSha = await sha256File(path);
+    if (item.sizeBytes !== actualSize) {
+      findings.push({
+        code: "size-mismatch",
+        path: item.path,
+        message: `Evidence size changed for ${item.path}: expected ${item.sizeBytes}, got ${actualSize}.`,
+      });
+    }
+    if (item.sha256 !== actualSha) {
+      findings.push({
+        code: "hash-mismatch",
+        path: item.path,
+        message: `Evidence hash changed for ${item.path}.`,
+      });
+    }
+  }
+
+  return {
+    checked,
+    findings,
+  };
+}
+
+export async function commandReceiptEvent(receipt, options = {}) {
+  const source = options.source ?? "command receipt";
+  const verification = await verifyCommandReceiptEvidence(receipt, options);
+  const status = commandReceiptStatus(receipt, verification);
+  const links = optionValues(options.link);
+  const files = uniqueStrings([
+    String(source),
+    ...receipt.evidence.map((item) => item.path),
+  ]);
+  const detail = [
+    `receipt status ${receipt.status}`,
+    receipt.exitCode !== null ? `exit code ${receipt.exitCode}` : null,
+    receipt.cwd ? `cwd ${receipt.cwd}` : null,
+    receipt.createdAt ? `created ${receipt.createdAt}` : null,
+    `${verification.checked}/${receipt.evidence.length} evidence files checked`,
+  ].filter(Boolean).join(", ");
+  const findingSummary = verification.findings.length
+    ? ` Findings: ${verification.findings.map((finding) => `${finding.code}${finding.path ? ` ${finding.path}` : ""}`).join("; ")}.`
+    : "";
+  const notes = receipt.notes.length ? ` Notes: ${receipt.notes.join(" ")}` : "";
+
+  return createEvent({
+    type: "command",
+    title: `Command receipt ${status}: ${truncateTitle(receipt.command)}`,
+    summary: `Imported ${receipt.schemaVersion} from ${source}: ${detail}.${findingSummary}${notes}`,
+    status,
+    files,
+    commands: [receipt.command],
     links,
   });
 }
@@ -1027,6 +1173,61 @@ function optionValues(value) {
     return [];
   }
   return Array.isArray(value) ? value : [value];
+}
+
+function normalizeReceiptEvidence(item, index) {
+  if (!item || typeof item !== "object" || Array.isArray(item)) {
+    throw new Error(`Command receipt evidence item ${index + 1} must be an object.`);
+  }
+
+  const path = optionalString(item.path);
+  const sha256 = optionalString(item.sha256);
+  const sizeBytes = numberOrDefault(item.size_bytes, Number.NaN);
+  if (!path) {
+    throw new Error(`Command receipt evidence item ${index + 1} must include a path.`);
+  }
+  if (!/^[a-f0-9]{64}$/i.test(sha256)) {
+    throw new Error(`Command receipt evidence item ${index + 1} must include a SHA-256 hash.`);
+  }
+  if (!Number.isFinite(sizeBytes) || sizeBytes < 0) {
+    throw new Error(`Command receipt evidence item ${index + 1} must include size_bytes.`);
+  }
+
+  return {
+    path,
+    sizeBytes,
+    sha256: sha256.toLowerCase(),
+  };
+}
+
+function resolveReceiptEvidencePath(baseDir, path) {
+  return path.startsWith("/") ? path : resolve(baseDir, path);
+}
+
+async function sha256File(path) {
+  const content = await readFile(path);
+  return createHash("sha256").update(content).digest("hex");
+}
+
+function commandReceiptStatus(receipt, verification) {
+  if (verification.findings.length > 0) {
+    return "blocked";
+  }
+  if (receipt.status === "pass") {
+    return "passed";
+  }
+  if (receipt.status === "fail") {
+    return "failed";
+  }
+  if (receipt.status === "skipped") {
+    return "skipped";
+  }
+  return "blocked";
+}
+
+function truncateTitle(value) {
+  const text = String(value).replace(/\s+/g, " ").trim();
+  return text.length > 72 ? `${text.slice(0, 69)}...` : text;
 }
 
 function verificationSummary(source, envelope) {

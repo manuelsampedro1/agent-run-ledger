@@ -1,0 +1,18 @@
+{
+  "schema_version": "agent-command-receipt.v1",
+  "command": "npm test",
+  "status": "pass",
+  "exit_code": 0,
+  "cwd": ".",
+  "created_at": "2026-06-03T00:00:00Z",
+  "notes": [
+    "Fixture receipt for importing hashed command evidence into a run ledger."
+  ],
+  "evidence": [
+    {
+      "path": "examples/command-output.log",
+      "size_bytes": 12,
+      "sha256": "22fff6c04f02dad381b06f296cceeed4cda34adabe2f1486d6f9e895c8d4616b"
+    }
+  ]
+}

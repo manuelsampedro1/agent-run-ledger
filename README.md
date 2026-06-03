@@ -177,6 +177,35 @@ node bin/agent-run-ledger.js import-ci \
 
 The imported CI run becomes command evidence with `passed`, `failed`, `running`, `planned`, `skipped`, or `done` status and carries the run URL when the JSON includes `html_url`.
 
+Import a hashed command receipt after local verification. This accepts
+`agent-command-receipt.v1` JSON, checks the referenced evidence file sizes and
+SHA-256 hashes, and records the command as `passed`, `failed`, `skipped`, or
+`blocked` when the receipt outcome is unknown or evidence drifted:
+
+```bash
+python3 -m agent_command_receipt create \
+  --command "npm test" \
+  --status pass \
+  --exit-code 0 \
+  --base-dir . \
+  --evidence examples/command-output.log \
+  --output /tmp/command-receipt.json
+
+node bin/agent-run-ledger.js import-receipt \
+  --ledger .agent-run/ledger.jsonl \
+  --receipt /tmp/command-receipt.json \
+  --base-dir .
+```
+
+Try the bundled fixture:
+
+```bash
+node bin/agent-run-ledger.js import-receipt \
+  --ledger /tmp/agent-run-ledger-receipt.jsonl \
+  --receipt examples/command-receipt.json \
+  --base-dir .
+```
+
 Use strict doctor mode when a handoff should fail until planned checks are executed and blockers are resolved:
 
 ```bash
@@ -273,6 +302,7 @@ agent-run-ledger import-checklist --ledger .agent-run/ledger.jsonl --checklist /
 agent-run-ledger import-readiness --ledger .agent-run/ledger.jsonl --readiness-report /tmp/repo-readiness.json
 agent-run-ledger import-review-packet --ledger .agent-run/ledger.jsonl --packet /tmp/review-packet.md
 agent-run-ledger import-ci --ledger .agent-run/ledger.jsonl --ci-run /tmp/ci-run.json
+agent-run-ledger import-receipt --ledger .agent-run/ledger.jsonl --receipt /tmp/command-receipt.json --base-dir .
 agent-run-ledger doctor --ledger .agent-run/ledger.jsonl
 agent-run-ledger doctor --ledger .agent-run/ledger.jsonl --json
 agent-run-ledger doctor --ledger .agent-run/ledger.jsonl --strict
